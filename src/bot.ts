@@ -19,7 +19,8 @@ import { clearSession, getRecentConversation, getRecentMemories, getSession, set
 import { logger } from './logger.js';
 import { downloadMedia, buildPhotoMessage, buildDocumentMessage, buildVideoMessage } from './media.js';
 import { buildMemoryContext, saveConversationTurn } from './memory.js';
-import { emitChatEvent, setProcessing, setActiveAbort, abortActiveQuery } from './state.js';
+import { parseDelegation, delegateToAgent, getAvailableAgents, analyzeAndRoute } from './orchestrator.js';
+import { emitChatEvent, setProcessing, setActiveAbort, abortActiveQuery, getIsProcessing } from './state.js';
 
 // ── Context window tracking ──────────────────────────────────────────
 // Uses input_tokens from the last API call (= actual context window size:
@@ -271,6 +272,7 @@ async function sendTyping(api: Api<RawApi>, chatId: number): Promise<void> {
 
 /**
  * Authorise the incoming chat against ALLOWED_CHAT_ID.
+ * Supports comma-separated list of IDs for multiple channels/DMs.
  * If ALLOWED_CHAT_ID is not yet configured, guide the user to set it up.
  * Returns true if the message should be processed.
  */
@@ -279,7 +281,8 @@ function isAuthorised(chatId: number): boolean {
     // Not yet configured — let every request through but warn in the reply handler
     return true;
   }
-  return chatId.toString() === ALLOWED_CHAT_ID;
+  const allowed = ALLOWED_CHAT_ID.split(',').map(id => id.trim());
+  return allowed.includes(chatId.toString());
 }
 
 /**
@@ -287,6 +290,22 @@ function isAuthorised(chatId: number): boolean {
  * @param forceVoiceReply  When true, always respond with audio (e.g. user sent a voice note).
  * @param skipLog  When true, skip logging this turn to conversation_log (used by /respin to avoid self-referential logging).
  */
+// Per-chat message queue — prevents concurrent agent calls stacking up
+// typing indicators and producing out-of-order replies.
+const messageQueue = new Map<string, Array<() => Promise<void>>>();
+const queueRunning = new Set<string>();
+
+async function drainQueue(chatIdStr: string): Promise<void> {
+  if (queueRunning.has(chatIdStr)) return;
+  queueRunning.add(chatIdStr);
+  const queue = messageQueue.get(chatIdStr) ?? [];
+  while (queue.length > 0) {
+    const next = queue.shift()!;
+    await next().catch((err) => logger.error({ err }, 'Queued message handler failed'));
+  }
+  queueRunning.delete(chatIdStr);
+}
+
 async function handleMessage(ctx: Context, message: string, forceVoiceReply = false, skipLog = false): Promise<void> {
   const chatId = ctx.chat!.id;
   const chatIdStr = chatId.toString();
@@ -305,13 +324,160 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
     return;
   }
 
+  // If already processing, queue this message so typing intervals don't stack.
+  if (getIsProcessing().processing && getIsProcessing().chatId === chatIdStr) {
+    logger.info({ chatIdStr, messageLen: message.length }, 'Already processing — queuing message');
+    const queue = messageQueue.get(chatIdStr) ?? [];
+    queue.push(() => handleMessageInner(ctx, message, forceVoiceReply, skipLog));
+    messageQueue.set(chatIdStr, queue);
+    // Acknowledge so Max knows it was received
+    await ctx.reply('⏳ On it — finishing previous task first...').catch(() => {});
+    return;
+  }
+
+  await handleMessageInner(ctx, message, forceVoiceReply, skipLog);
+  // Drain any messages that arrived while we were processing
+  void drainQueue(chatIdStr);
+}
+
+async function handleMessageInner(ctx: Context, message: string, forceVoiceReply = false, skipLog = false): Promise<void> {
+  const chatId = ctx.chat!.id;
+  const chatIdStr = chatId.toString();
+
   logger.info(
     { chatId, messageLen: message.length },
     'Processing message',
   );
 
+  // ── Voice note shortcut ────────────────────────────────────────────────────
+  // "voice note: [text]" or "send a voice note: [text]" — synthesize the
+  // literal text and send it as a Telegram voice message. No AI call needed.
+  const voiceNoteMatch = message.match(/^(?:send\s+(?:a\s+)?)?voice\s+note\s*:\s*(.+)/is);
+  if (voiceNoteMatch) {
+    const textToSpeak = voiceNoteMatch[1].trim();
+    const caps = voiceCapabilities();
+    if (!caps.tts) {
+      await ctx.reply('TTS not available — check ELEVENLABS_API_KEY in .env');
+      return;
+    }
+    try {
+      await sendTyping(ctx.api, chatId);
+      const audioBuffer = await synthesizeSpeech(textToSpeak);
+      await ctx.replyWithVoice(new InputFile(audioBuffer, 'voice-note.ogg'));
+    } catch (err) {
+      logger.error({ err }, 'Voice note synthesis failed');
+      await ctx.reply(`Failed to generate voice note: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    return;
+  }
+  // ──────────────────────────────────────────────────────────────────────────
+
+  // ── Learn library URL shortcut ─────────────────────────────────────────
+  const learnUrlMatch = message.match(
+    /^(?:add(?:\s+to\s+library)?:|save(?:\s+this)?:|add\s+this:)?\s*(https?:\/\/\S+)$/i,
+  );
+  if (learnUrlMatch) {
+    const url = learnUrlMatch[1];
+    try {
+      await sendTyping(ctx.api, chatId);
+      const res = await fetch(
+        'https://max-command-center.max-command-center.workers.dev/api/learn/add',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url }),
+        },
+      );
+      if (res.ok) {
+        const data = (await res.json()) as Record<string, unknown>;
+        await ctx.reply(`📚 Added to library: ${data.title || url}`);
+      } else {
+        await ctx.reply(`Failed to add — API returned ${res.status}`);
+      }
+    } catch (err) {
+      logger.error({ err }, 'Learn library add failed');
+      await ctx.reply(`Failed to add to library: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    return;
+  }
+  // ──────────────────────────────────────────────────────────────────────────
+
   // Emit user message to SSE clients
   emitChatEvent({ type: 'user_message', chatId: chatIdStr, content: message, source: 'telegram' });
+
+  // ── Explicit delegation (@agent or /delegate) ─────────────────────
+  const delegation = parseDelegation(message);
+  if (delegation) {
+    setProcessing(chatIdStr, true);
+    await sendTyping(ctx.api, chatId);
+    try {
+      const delegationResult = await delegateToAgent(
+        delegation.agentId,
+        delegation.prompt,
+        chatIdStr,
+        AGENT_ID,
+        (progressMsg) => {
+          emitChatEvent({ type: 'progress', chatId: chatIdStr, description: progressMsg });
+          void ctx.reply(progressMsg).catch(() => {});
+        },
+      );
+
+      const response = delegationResult.text?.trim() || 'Agent completed with no output.';
+      const header = `[${delegationResult.agentId} — ${Math.round(delegationResult.durationMs / 1000)}s]`;
+
+      if (!skipLog) {
+        saveConversationTurn(chatIdStr, message, response, undefined, AGENT_ID);
+      }
+      emitChatEvent({ type: 'assistant_message', chatId: chatIdStr, content: response, source: 'telegram' });
+
+      for (const part of splitMessage(formatForTelegram(`${header}\n\n${response}`))) {
+        await ctx.reply(part, { parse_mode: 'HTML' });
+      }
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      logger.error({ err, agentId: delegation.agentId }, 'Delegation failed');
+      await ctx.reply(`Delegation to ${delegation.agentId} failed: ${errMsg}`);
+    } finally {
+      setProcessing(chatIdStr, false);
+    }
+    return;
+  }
+
+  // ── Smart routing (auto-delegation) ──────────────────────────────
+  const agents = getAvailableAgents();
+  if (agents.length > 0 && AGENT_ID === 'main') {
+    try {
+      setProcessing(chatIdStr, true);
+      await sendTyping(ctx.api, chatId);
+
+      const routeResult = await analyzeAndRoute(
+        message,
+        chatIdStr,
+        AGENT_ID,
+        (progressMsg) => {
+          emitChatEvent({ type: 'progress', chatId: chatIdStr, description: progressMsg });
+          void ctx.reply(progressMsg).catch(() => {});
+        },
+      );
+
+      if (routeResult) {
+        const response = routeResult.response;
+        if (!skipLog) {
+          saveConversationTurn(chatIdStr, message, response, undefined, AGENT_ID);
+        }
+        emitChatEvent({ type: 'assistant_message', chatId: chatIdStr, content: response, source: 'telegram' });
+        for (const part of splitMessage(formatForTelegram(response))) {
+          await ctx.reply(part, { parse_mode: 'HTML' });
+        }
+        setProcessing(chatIdStr, false);
+        return;
+      }
+      setProcessing(chatIdStr, false);
+    } catch (err) {
+      logger.warn({ err }, 'Smart router failed, falling back to main agent');
+      setProcessing(chatIdStr, false);
+    }
+  }
 
   // Build memory context and prepend to message
   const memCtx = await buildMemoryContext(chatIdStr, message);

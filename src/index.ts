@@ -9,6 +9,7 @@ import { initDatabase } from './db.js';
 import { logger } from './logger.js';
 import { cleanupOldUploads } from './media.js';
 import { runDecaySweep } from './memory.js';
+import { initOrchestrator } from './orchestrator.js';
 import { initScheduler } from './scheduler.js';
 import { setTelegramConnected, setBotInfo } from './state.js';
 
@@ -81,6 +82,9 @@ async function main(): Promise<void> {
 
   initDatabase();
   logger.info('Database ready');
+
+  initOrchestrator();
+  logger.info('Orchestrator ready');
 
   runDecaySweep();
   setInterval(() => runDecaySweep(), 24 * 60 * 60 * 1000);
