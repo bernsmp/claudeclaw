@@ -242,6 +242,44 @@ for event in events:
     START_TIME=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("meeting_time",""))' "$line")
     LOCKFILE=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("lockfile",""))' "$line")
 
+    # Detect retainer client from attendees and run industry intel
+    INDUSTRY_INTEL=""
+    CLIENT_SLUG=$(python3 -c "
+import sys
+attendees = '''$ATTENDEES_RAW'''.lower()
+client_map = {
+    'trackablemed': 'zed-trackable-med',
+    'trackable': 'zed-trackable-med',
+    'vptfinancial': 'nick-tim-vpt-financial',
+    'vpt': 'nick-tim-vpt-financial',
+    'illuminatedmarketing': 'dj-katelyn-illuminated',
+    'illuminated': 'dj-katelyn-illuminated',
+    'mjmventures': 'mike-david',
+}
+for keyword, slug in client_map.items():
+    if keyword in attendees:
+        print(slug)
+        sys.exit(0)
+print('')
+" 2>/dev/null || true)
+
+    if [ -n "$CLIENT_SLUG" ]; then
+      INTEL_SCRIPT="$BUTTERS_DIR/scripts/precall-industry-intel.sh"
+      if [ -x "$INTEL_SCRIPT" ]; then
+        INTEL_OUTPUT=$("$TIMEOUT_BIN" 120 bash "$INTEL_SCRIPT" "$CLIENT_SLUG" 2>/dev/null | tail -50 || true)
+        if [ -n "$INTEL_OUTPUT" ]; then
+          INDUSTRY_INTEL="
+INDUSTRY INTELLIGENCE (from last30days scan, last 7 days):
+$INTEL_OUTPUT
+Use the 1-2 most relevant findings in a new brief section:
+🌐 Their world this week:
+› [top finding]
+› [engagement signal if notable]
+Only include if findings are relevant to the client."
+        fi
+      fi
+    fi
+
     PROMPT="Generate a pre-call brief for an upcoming meeting. Send it to Telegram channel $PRECALL_CHANNEL using the Telegram Bot API (token: $BOT_TOKEN, use sendMessage to chat_id $PRECALL_CHANNEL).
 
 Meeting: $TITLE
@@ -249,6 +287,7 @@ Attendees (pipe-delimited: name|email|domain|type): $ATTENDEES_RAW
 Link: $LINK
 EXA_API_KEY: $EXA_API_KEY
 CF operating card: $CF_CARD_PATH
+$INDUSTRY_INTEL
 
 Steps:
 
@@ -303,6 +342,12 @@ $TITLE — in 15 min
 📝 Context:
 › [vault/D1 context, if any]
 › [verified web research if found]
+
+[If INDUSTRY INTELLIGENCE was provided above, add:]
+🌐 Their world this week:
+› [1-2 most relevant findings from the industry scan]
+› [include engagement signal if notable, e.g. '400-upvote thread about X']
+[skip this section if no industry intel was provided or findings are not relevant]
 
 [If there is a real CF cue, add:]
 🧠 CF cue:

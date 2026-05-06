@@ -32,6 +32,19 @@ import { getDashboardHtml } from './dashboard-html.js';
 import { logger } from './logger.js';
 import { getTelegramConnected, getBotInfo, chatEvents, getIsProcessing, abortActiveQuery, ChatEvent } from './state.js';
 
+const DASHBOARD_AUTH_COOKIE = 'claudeclaw_dashboard_auth';
+
+function readCookie(header: string | undefined, name: string): string | null {
+  if (!header) return null;
+  for (const part of header.split(';')) {
+    const trimmed = part.trim();
+    if (trimmed.startsWith(`${name}=`)) {
+      return decodeURIComponent(trimmed.slice(name.length + 1));
+    }
+  }
+  return null;
+}
+
 export function startDashboard(botApi?: Api<RawApi>): void {
   if (!DASHBOARD_TOKEN) {
     logger.info('DASHBOARD_TOKEN not set, dashboard disabled');
@@ -40,9 +53,14 @@ export function startDashboard(botApi?: Api<RawApi>): void {
 
   const app = new Hono();
 
-  // CORS headers for cross-origin access (Cloudflare tunnel, mobile browsers)
+  // Same-origin by default. Only mirror the request origin when it matches the host.
   app.use('*', async (c, next) => {
-    c.header('Access-Control-Allow-Origin', '*');
+    const origin = c.req.header('origin');
+    const requestOrigin = new URL(c.req.url).origin;
+    if (origin && origin === requestOrigin) {
+      c.header('Access-Control-Allow-Origin', origin);
+      c.header('Vary', 'Origin');
+    }
     c.header('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
     c.header('Access-Control-Allow-Headers', 'Content-Type');
     if (c.req.method === 'OPTIONS') return c.body(null, 204);
@@ -58,7 +76,17 @@ export function startDashboard(botApi?: Api<RawApi>): void {
   // Token auth middleware
   app.use('*', async (c, next) => {
     const token = c.req.query('token');
-    if (!DASHBOARD_TOKEN || !token || token !== DASHBOARD_TOKEN) {
+    const cookieToken = readCookie(c.req.header('cookie'), DASHBOARD_AUTH_COOKIE);
+    const isBootstrap = c.req.path === '/' && token === DASHBOARD_TOKEN;
+    if (isBootstrap) {
+      c.header(
+        'Set-Cookie',
+        `${DASHBOARD_AUTH_COOKIE}=${encodeURIComponent(DASHBOARD_TOKEN)}; HttpOnly; SameSite=Lax; Path=/`,
+      );
+      await next();
+      return;
+    }
+    if (!DASHBOARD_TOKEN || cookieToken !== DASHBOARD_TOKEN) {
       return c.json({ error: 'Unauthorized' }, 401);
     }
     await next();
@@ -67,7 +95,7 @@ export function startDashboard(botApi?: Api<RawApi>): void {
   // Serve dashboard HTML
   app.get('/', (c) => {
     const chatId = c.req.query('chatId') || '';
-    return c.html(getDashboardHtml(DASHBOARD_TOKEN, chatId));
+    return c.html(getDashboardHtml(chatId));
   });
 
   // Scheduled tasks

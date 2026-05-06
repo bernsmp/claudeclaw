@@ -51,7 +51,7 @@ Respond with ONLY valid JSON (no markdown, no code fences, no explanation):
 // ── Classifier ───────────────────────────────────────────────────────
 
 // OpenRouter uses OpenAI-compatible API with Haiku for fast/cheap classification
-const PLANNER_MODEL = 'anthropic/claude-haiku-4-5-20251001';
+const PLANNER_MODEL = 'anthropic/claude-haiku-4-5';
 const PLANNER_TIMEOUT_MS = 10_000;
 const API_BASE = 'https://openrouter.ai/api/v1/chat/completions';
 

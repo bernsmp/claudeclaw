@@ -1,14 +1,22 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
   _initTestDatabase,
+  approveQaFix,
+  countPendingDrafts,
   setSession,
   getSession,
   clearSession,
+  getDatabase,
+  getNextPendingDraft,
+  getOldestPendingDraft,
+  getPendingDraftById,
+  getPendingDraftByTelegramMessageId,
   saveMemory,
   searchMemories,
   getRecentMemories,
   touchMemory,
   decayMemories,
+  rejectQaFix,
 } from './db.js';
 
 describe('database', () => {
@@ -228,6 +236,114 @@ describe('database', () => {
       const after = getRecentMemories('chat1', 1)[0];
       // Salience should be unchanged since memory was created < 1 day ago
       expect(after.salience).toBe(before.salience);
+    });
+  });
+
+  describe('pending drafts', () => {
+    function insertDraft(timestamp: number, account = 'Beyond Prompts', status = 'awaiting', telegramMsgId = ''): number {
+      const db = getDatabase();
+      const result = db.prepare(
+        `INSERT INTO pending_drafts (timestamp, platform, account, draft_text, source, status, telegram_msg_id)
+         VALUES (?, 'x', ?, ?, 'test', ?, ?)`,
+      ).run(timestamp, account, `Draft at ${timestamp}`, status, telegramMsgId);
+      return Number(result.lastInsertRowid);
+    }
+
+    it('counts awaiting drafts by account', () => {
+      insertDraft(100, 'Beyond Prompts', 'awaiting');
+      insertDraft(101, 'Beyond Prompts', 'scheduled');
+      insertDraft(102, 'Butters', 'awaiting');
+
+      expect(countPendingDrafts('awaiting', 'Beyond Prompts')).toBe(1);
+      expect(countPendingDrafts('awaiting')).toBe(2);
+    });
+
+    it('returns the oldest awaiting draft for an account', () => {
+      insertDraft(200, 'Beyond Prompts', 'awaiting');
+      insertDraft(100, 'Beyond Prompts', 'awaiting');
+      insertDraft(50, 'Beyond Prompts', 'scheduled');
+
+      const oldest = getOldestPendingDraft('Beyond Prompts');
+      expect(oldest?.timestamp).toBe(100);
+      expect(oldest?.status).toBe('awaiting');
+    });
+
+    it('looks up pending drafts by id and telegram message id', () => {
+      const id = insertDraft(300, 'Beyond Prompts', 'awaiting', '777');
+
+      expect(getPendingDraftById(id)?.id).toBe(id);
+      expect(getPendingDraftByTelegramMessageId(777)?.id).toBe(id);
+      expect(getPendingDraftByTelegramMessageId(999)).toBeNull();
+    });
+
+    it('returns the next awaiting draft after the current one', () => {
+      const firstId = insertDraft(400, 'Beyond Prompts', 'awaiting');
+      insertDraft(401, 'Beyond Prompts', 'scheduled');
+      insertDraft(402, 'Beyond Prompts', 'awaiting');
+
+      const first = getPendingDraftById(firstId)!;
+      const next = getNextPendingDraft('Beyond Prompts', first.timestamp, first.id);
+      expect(next?.timestamp).toBe(402);
+      expect(next?.status).toBe('awaiting');
+    });
+  });
+
+  describe('qa fixes', () => {
+    function insertQaScore(feature = 'precall_brief', fixStatus = 'pending'): number {
+      const db = getDatabase();
+      const result = db.prepare(
+        `INSERT INTO qa_scores (week, feature, score, rubric_hits, rubric_miss, evidence, proposed_fix, fix_status)
+         VALUES ('2026-W14', ?, 3, '[]', '[]', 'example evidence', 'Tighten the loop', ?)`,
+      ).run(feature, fixStatus);
+      return Number(result.lastInsertRowid);
+    }
+
+    it('approveQaFix marks the score approved and logs a behavior change row', () => {
+      const qaId = insertQaScore();
+
+      const approved = approveQaFix(qaId);
+      expect(approved).not.toBeNull();
+      expect(approved?.id).toBe(qaId);
+      expect(approved?.fix_status).toBe('approved');
+      expect(approved?.behavior_change_id).toBeGreaterThan(0);
+
+      const db = getDatabase();
+      const storedScore = db.prepare(
+        `SELECT fix_status FROM qa_scores WHERE id = ?`,
+      ).get(qaId) as { fix_status: string };
+      expect(storedScore.fix_status).toBe('approved');
+
+      const behaviorChange = db.prepare(
+        `SELECT id, feature, change_summary, before_text, approved_by
+         FROM behavior_changes
+         WHERE id = ?`,
+      ).get(approved?.behavior_change_id) as {
+        id: number;
+        feature: string;
+        change_summary: string;
+        before_text: string;
+        approved_by: string;
+      };
+
+      expect(behaviorChange.feature).toBe('precall_brief');
+      expect(behaviorChange.change_summary).toBe('Tighten the loop');
+      expect(behaviorChange.before_text).toContain(`qa_score_id=${qaId}`);
+      expect(behaviorChange.approved_by).toBe('max');
+    });
+
+    it('rejectQaFix marks the score rejected without logging a behavior change row', () => {
+      const qaId = insertQaScore('ai_radar');
+
+      const rejected = rejectQaFix(qaId);
+      expect(rejected).not.toBeNull();
+      expect(rejected?.fix_status).toBe('rejected');
+
+      const db = getDatabase();
+      const behaviorChangeCount = db.prepare(
+        `SELECT COUNT(*) AS count FROM behavior_changes`,
+      ).get() as { count: number };
+
+      expect(behaviorChangeCount.count).toBe(0);
     });
   });
 });

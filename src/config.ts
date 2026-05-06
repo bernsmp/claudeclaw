@@ -15,6 +15,13 @@ const envConfig = readEnvFile([
   'DASHBOARD_PORT',
   'DASHBOARD_TOKEN',
   'DASHBOARD_URL',
+  'AGENT_BACKEND',
+  'HERMES_BIN',
+  'HERMES_MODEL',
+  'HERMES_PROVIDER',
+  'HERMES_TIMEOUT_MS',
+  'HERMES_RESUME_ENABLED',
+  'HERMES_SCHEDULER_TASK_IDS',
 ]);
 
 // ── Multi-agent support ──────────────────────────────────────────────
@@ -93,3 +100,38 @@ export const DASHBOARD_TOKEN =
   process.env.DASHBOARD_TOKEN || envConfig.DASHBOARD_TOKEN || '';
 export const DASHBOARD_URL =
   process.env.DASHBOARD_URL || envConfig.DASHBOARD_URL || '';
+
+export type AgentBackend = 'claude' | 'hermes' | 'shadow';
+
+function normalizeAgentBackend(value: string | undefined): AgentBackend {
+  if (value === 'hermes' || value === 'shadow') return value;
+  return 'claude';
+}
+
+export const AGENT_BACKEND = normalizeAgentBackend(
+  (process.env.AGENT_BACKEND || envConfig.AGENT_BACKEND || '').toLowerCase(),
+);
+
+export const HERMES_BIN =
+  process.env.HERMES_BIN || envConfig.HERMES_BIN || 'hermes';
+
+export const HERMES_MODEL =
+  process.env.HERMES_MODEL || envConfig.HERMES_MODEL || '';
+
+export const HERMES_PROVIDER =
+  process.env.HERMES_PROVIDER || envConfig.HERMES_PROVIDER || '';
+
+export const HERMES_TIMEOUT_MS = parseInt(
+  process.env.HERMES_TIMEOUT_MS || envConfig.HERMES_TIMEOUT_MS || String(10 * 60 * 1000),
+  10,
+);
+
+export const HERMES_RESUME_ENABLED =
+  (process.env.HERMES_RESUME_ENABLED || envConfig.HERMES_RESUME_ENABLED || '').toLowerCase() === 'true';
+
+export const HERMES_SCHEDULER_TASK_IDS = new Set(
+  (process.env.HERMES_SCHEDULER_TASK_IDS || envConfig.HERMES_SCHEDULER_TASK_IDS || '')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean),
+);

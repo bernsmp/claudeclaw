@@ -5,10 +5,11 @@ import { loadAgentConfig } from './agent-config.js';
 import { createBot } from './bot.js';
 import { ALLOWED_CHAT_ID, activeBotToken, STORE_DIR, PROJECT_ROOT, setAgentOverrides } from './config.js';
 import { startDashboard } from './dashboard.js';
-import { initDatabase } from './db.js';
+import { initDatabase, getDatabase } from './db.js';
+import { LcmEngine } from './lcm/index.js';
 import { logger } from './logger.js';
 import { cleanupOldUploads } from './media.js';
-import { runDecaySweep } from './memory.js';
+import { runDecaySweep, setLcmEngine } from './memory.js';
 import { initOrchestrator } from './orchestrator.js';
 import { initScheduler } from './scheduler.js';
 import { setTelegramConnected, setBotInfo } from './state.js';
@@ -83,6 +84,27 @@ async function main(): Promise<void> {
   initDatabase();
   logger.info('Database ready');
 
+  // Initialize LCM (Lossless Context Management) — DAG-based conversation memory
+  // Alert sender is deferred because bot isn't created yet
+  let sendAlert: ((msg: string) => void) | null = null;
+  try {
+    const lcm = new LcmEngine(getDatabase(), {
+      onCreditAlert: (error) => {
+        const alertMsg = `🚨 LCM summarization failed — ${error.type}\n\n${error.message}\n\nAdd credits to your Anthropic API key to restore lossless memory.`;
+        logger.error({ error }, 'LCM credit alert');
+        sendAlert?.(alertMsg);
+      },
+    });
+    setLcmEngine(lcm);
+    const stats = lcm.getStats();
+    logger.info(
+      { messages: stats.messages, summaries: stats.summaries, maxDepth: stats.maxDepth },
+      'LCM engine ready',
+    );
+  } catch (err) {
+    logger.error({ err }, 'LCM initialization failed — continuing without lossless memory');
+  }
+
   initOrchestrator();
   logger.info('Orchestrator ready');
 
@@ -92,6 +114,15 @@ async function main(): Promise<void> {
   cleanupOldUploads();
 
   const bot = createBot();
+
+  // Wire up LCM credit alert sender now that bot exists
+  if (ALLOWED_CHAT_ID) {
+    sendAlert = (msg: string) => {
+      bot.api.sendMessage(ALLOWED_CHAT_ID, msg).catch((err: unknown) =>
+        logger.error({ err }, 'Failed to send LCM credit alert'),
+      );
+    };
+  }
 
   // Dashboard only runs in the main bot process
   if (AGENT_ID === 'main') {

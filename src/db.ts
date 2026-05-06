@@ -51,11 +51,14 @@ function createSchema(database: Database.Database): void {
     );
 
     CREATE TABLE IF NOT EXISTS wa_outbox (
-      id          INTEGER PRIMARY KEY AUTOINCREMENT,
-      to_chat_id  TEXT NOT NULL,
-      body        TEXT NOT NULL,
-      created_at  INTEGER NOT NULL,
-      sent_at     INTEGER
+      id                INTEGER PRIMARY KEY AUTOINCREMENT,
+      to_chat_id        TEXT NOT NULL,
+      body              TEXT NOT NULL,
+      created_at        INTEGER NOT NULL,
+      sent_at           INTEGER,
+      approval_required INTEGER NOT NULL DEFAULT 1,
+      approved_at       INTEGER,
+      approval_source   TEXT DEFAULT ''
     );
 
     CREATE INDEX IF NOT EXISTS idx_wa_outbox_unsent ON wa_outbox(sent_at) WHERE sent_at IS NULL;
@@ -125,6 +128,83 @@ function createSchema(database: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_hive_mind_agent ON hive_mind(agent_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_hive_mind_time ON hive_mind(created_at DESC);
 
+    CREATE TABLE IF NOT EXISTS voice_learning_log (
+      id             INTEGER PRIMARY KEY AUTOINCREMENT,
+      timestamp      INTEGER NOT NULL,
+      source         TEXT NOT NULL,
+      platform       TEXT NOT NULL,
+      account        TEXT NOT NULL,
+      original_draft TEXT NOT NULL,
+      final_posted   TEXT DEFAULT '',
+      was_edited     INTEGER DEFAULT 0,
+      was_skipped    INTEGER DEFAULT 0,
+      edit_diff      TEXT DEFAULT '',
+      typefully_id   TEXT DEFAULT '',
+      created_at     TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_voice_learning_log_time ON voice_learning_log(timestamp DESC);
+
+    CREATE TABLE IF NOT EXISTS pending_drafts (
+      id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+      timestamp             INTEGER NOT NULL,
+      platform              TEXT NOT NULL,
+      account               TEXT NOT NULL,
+      draft_text            TEXT NOT NULL,
+      source                TEXT DEFAULT '',
+      status                TEXT DEFAULT 'awaiting',
+      telegram_msg_id       TEXT DEFAULT '',
+      typefully_id          TEXT DEFAULT '',
+      created_at            TEXT DEFAULT (datetime('now')),
+      quality_gate_scanned  INTEGER DEFAULT 0,
+      private_url           TEXT DEFAULT '',
+      x_published_url       TEXT DEFAULT '',
+      posted_at             INTEGER,
+      scheduled_for         TEXT DEFAULT '',
+      substack_note_status  TEXT DEFAULT '',
+      substack_note_url     TEXT DEFAULT '',
+      substack_note_posted_at INTEGER,
+      public_safety_status  TEXT DEFAULT '',
+      public_safety_notes   TEXT DEFAULT '',
+      public_safety_checked_at INTEGER,
+      performance_checked_at INTEGER,
+      impressions           INTEGER,
+      likes                 INTEGER,
+      replies               INTEGER,
+      reposts               INTEGER,
+      bookmarks             INTEGER
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_pending_drafts_status_time ON pending_drafts(status, timestamp ASC);
+    CREATE INDEX IF NOT EXISTS idx_pending_drafts_account_time ON pending_drafts(account, timestamp DESC);
+
+    CREATE TABLE IF NOT EXISTS qa_scores (
+      id           INTEGER PRIMARY KEY AUTOINCREMENT,
+      week         TEXT NOT NULL,
+      feature      TEXT NOT NULL,
+      score        INTEGER NOT NULL,
+      rubric_hits  TEXT NOT NULL,
+      rubric_miss  TEXT NOT NULL,
+      evidence     TEXT DEFAULT '',
+      proposed_fix TEXT DEFAULT '',
+      fix_status   TEXT DEFAULT 'pending',
+      created_at   TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_qa_scores_feature_week ON qa_scores(feature, week, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS behavior_changes (
+      id             INTEGER PRIMARY KEY AUTOINCREMENT,
+      applied_at     TEXT DEFAULT (datetime('now')),
+      feature        TEXT NOT NULL,
+      change_summary TEXT NOT NULL,
+      before_text    TEXT DEFAULT '',
+      after_text     TEXT DEFAULT '',
+      approved_by    TEXT DEFAULT 'max'
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_behavior_changes_feature_time ON behavior_changes(feature, applied_at DESC);
+
     CREATE TABLE IF NOT EXISTS inter_agent_tasks (
       id            TEXT PRIMARY KEY,
       from_agent    TEXT NOT NULL,
@@ -167,6 +247,12 @@ export function initDatabase(): void {
   db.pragma('journal_mode = WAL');
   createSchema(db);
   runMigrations(db);
+}
+
+/** Expose the database instance for LCM integration. */
+export function getDatabase(): Database.Database {
+  if (!db) throw new Error('Database not initialized — call initDatabase() first');
+  return db;
 }
 
 /** Add columns that may not exist in older databases. */
@@ -212,6 +298,46 @@ function runMigrations(database: Database.Database): void {
   const convoCols = database.prepare(`PRAGMA table_info(conversation_log)`).all() as Array<{ name: string }>;
   if (!convoCols.some((c) => c.name === 'agent_id')) {
     database.exec(`ALTER TABLE conversation_log ADD COLUMN agent_id TEXT NOT NULL DEFAULT 'main'`);
+  }
+
+  const pendingDraftCols = database.prepare(`PRAGMA table_info(pending_drafts)`).all() as Array<{ name: string }>;
+  if (pendingDraftCols.length > 0) {
+    const addDraftColumn = (name: string, sql: string) => {
+      if (!pendingDraftCols.some((c) => c.name === name)) {
+        database.exec(`ALTER TABLE pending_drafts ADD COLUMN ${sql}`);
+      }
+    };
+
+    addDraftColumn('quality_gate_scanned', 'quality_gate_scanned INTEGER DEFAULT 0');
+    addDraftColumn('private_url', `private_url TEXT DEFAULT ''`);
+    addDraftColumn('x_published_url', `x_published_url TEXT DEFAULT ''`);
+    addDraftColumn('posted_at', 'posted_at INTEGER');
+    addDraftColumn('scheduled_for', `scheduled_for TEXT DEFAULT ''`);
+    addDraftColumn('substack_note_status', `substack_note_status TEXT DEFAULT ''`);
+    addDraftColumn('substack_note_url', `substack_note_url TEXT DEFAULT ''`);
+    addDraftColumn('substack_note_posted_at', 'substack_note_posted_at INTEGER');
+    addDraftColumn('public_safety_status', `public_safety_status TEXT DEFAULT ''`);
+    addDraftColumn('public_safety_notes', `public_safety_notes TEXT DEFAULT ''`);
+    addDraftColumn('public_safety_checked_at', 'public_safety_checked_at INTEGER');
+    addDraftColumn('performance_checked_at', 'performance_checked_at INTEGER');
+    addDraftColumn('impressions', 'impressions INTEGER');
+    addDraftColumn('likes', 'likes INTEGER');
+    addDraftColumn('replies', 'replies INTEGER');
+    addDraftColumn('reposts', 'reposts INTEGER');
+    addDraftColumn('bookmarks', 'bookmarks INTEGER');
+  }
+
+  const waOutboxCols = database.prepare(`PRAGMA table_info(wa_outbox)`).all() as Array<{ name: string }>;
+  if (waOutboxCols.length > 0) {
+    const addWaOutboxColumn = (name: string, sql: string) => {
+      if (!waOutboxCols.some((c) => c.name === name)) {
+        database.exec(`ALTER TABLE wa_outbox ADD COLUMN ${sql}`);
+      }
+    };
+
+    addWaOutboxColumn('approval_required', 'approval_required INTEGER NOT NULL DEFAULT 1');
+    addWaOutboxColumn('approved_at', 'approved_at INTEGER');
+    addWaOutboxColumn('approval_source', `approval_source TEXT DEFAULT ''`);
   }
 
   // Smart orchestrator: task_plans + task_plan_steps tables
@@ -370,6 +496,40 @@ export interface ScheduledTask {
   created_at: number;
 }
 
+export interface PendingDraft {
+  id: number;
+  timestamp: number;
+  platform: string;
+  account: string;
+  draft_text: string;
+  source: string;
+  status: string;
+  telegram_msg_id: string;
+  typefully_id: string;
+  private_url: string;
+  x_published_url: string;
+  posted_at: number | null;
+  scheduled_for: string;
+}
+
+const PENDING_DRAFT_BASE_SELECT = `
+  SELECT
+    id,
+    timestamp,
+    platform,
+    account,
+    draft_text,
+    source,
+    status,
+    telegram_msg_id,
+    typefully_id,
+    private_url,
+    x_published_url,
+    posted_at,
+    scheduled_for
+  FROM pending_drafts
+`;
+
 export function createScheduledTask(
   id: string,
   prompt: string,
@@ -391,6 +551,57 @@ export function getDueTasks(agentId = 'main'): ScheduledTask[] {
       `SELECT * FROM scheduled_tasks WHERE status = 'active' AND next_run <= ? AND agent_id = ? ORDER BY next_run`,
     )
     .all(now, agentId) as ScheduledTask[];
+}
+
+export function getPendingDraftById(id: number): PendingDraft | null {
+  const row = db
+    .prepare(`${PENDING_DRAFT_BASE_SELECT} WHERE id = ? LIMIT 1`)
+    .get(id) as PendingDraft | undefined;
+  return row ?? null;
+}
+
+export function getPendingDraftByTelegramMessageId(messageId: number): PendingDraft | null {
+  const row = db
+    .prepare(`${PENDING_DRAFT_BASE_SELECT} WHERE telegram_msg_id = ? LIMIT 1`)
+    .get(String(messageId)) as PendingDraft | undefined;
+  return row ?? null;
+}
+
+export function countPendingDrafts(status = 'awaiting', account?: string): number {
+  if (account) {
+    const row = db
+      .prepare(`SELECT COUNT(*) AS count FROM pending_drafts WHERE status = ? AND account = ?`)
+      .get(status, account) as { count: number };
+    return row.count;
+  }
+
+  const row = db
+    .prepare(`SELECT COUNT(*) AS count FROM pending_drafts WHERE status = ?`)
+    .get(status) as { count: number };
+  return row.count;
+}
+
+export function getOldestPendingDraft(account?: string): PendingDraft | null {
+  const sql = account
+    ? `${PENDING_DRAFT_BASE_SELECT} WHERE status = 'awaiting' AND account = ? ORDER BY timestamp ASC, id ASC LIMIT 1`
+    : `${PENDING_DRAFT_BASE_SELECT} WHERE status = 'awaiting' ORDER BY timestamp ASC, id ASC LIMIT 1`;
+  const row = account
+    ? db.prepare(sql).get(account)
+    : db.prepare(sql).get();
+  return (row as PendingDraft | undefined) ?? null;
+}
+
+export function getNextPendingDraft(account: string, afterTimestamp: number, afterId: number): PendingDraft | null {
+  const row = db.prepare(
+    `${PENDING_DRAFT_BASE_SELECT}
+     WHERE status = 'awaiting'
+       AND account = ?
+       AND (timestamp > ? OR (timestamp = ? AND id > ?))
+     ORDER BY timestamp ASC, id ASC
+     LIMIT 1`,
+  ).get(account, afterTimestamp, afterTimestamp, afterId) as PendingDraft | undefined;
+
+  return row ?? null;
 }
 
 export function getAllScheduledTasks(agentId?: string): ScheduledTask[] {
@@ -478,19 +689,26 @@ export interface WaOutboxItem {
   to_chat_id: string;
   body: string;
   created_at: number;
+  approval_required?: number;
+  approved_at?: number | null;
+  approval_source?: string;
 }
 
 export function enqueueWaMessage(toChatId: string, body: string): number {
   const now = Math.floor(Date.now() / 1000);
   const result = db.prepare(
-    `INSERT INTO wa_outbox (to_chat_id, body, created_at) VALUES (?, ?, ?)`,
+    `INSERT INTO wa_outbox (to_chat_id, body, created_at, approval_required) VALUES (?, ?, ?, 1)`,
   ).run(toChatId, body, now);
   return result.lastInsertRowid as number;
 }
 
 export function getPendingWaMessages(): WaOutboxItem[] {
   return db.prepare(
-    `SELECT id, to_chat_id, body, created_at FROM wa_outbox WHERE sent_at IS NULL ORDER BY created_at`,
+    `SELECT id, to_chat_id, body, created_at, approval_required, approved_at, approval_source
+     FROM wa_outbox
+     WHERE sent_at IS NULL
+       AND (approval_required = 0 OR approved_at IS NOT NULL)
+     ORDER BY created_at`,
   ).all() as WaOutboxItem[];
 }
 
@@ -510,6 +728,23 @@ export interface ConversationTurn {
   role: string;
   content: string;
   created_at: number;
+}
+
+export interface QaScore {
+  id: number;
+  week: string;
+  feature: string;
+  score: number;
+  rubric_hits: string;
+  rubric_miss: string;
+  evidence: string;
+  proposed_fix: string;
+  fix_status: string;
+  created_at: string;
+}
+
+export interface QaApprovalResult extends QaScore {
+  behavior_change_id: number;
 }
 
 export function logConversationTurn(
@@ -536,6 +771,42 @@ export function getRecentConversation(
        ORDER BY created_at DESC LIMIT ?`,
     )
     .all(chatId, limit) as ConversationTurn[];
+}
+
+export function getQaScoreById(id: number): QaScore | null {
+  const row = db
+    .prepare('SELECT * FROM qa_scores WHERE id = ?')
+    .get(id) as QaScore | undefined;
+  return row ?? null;
+}
+
+export function approveQaFix(id: number): QaApprovalResult | null {
+  const row = getQaScoreById(id);
+  if (!row) return null;
+
+  db.prepare(`UPDATE qa_scores SET fix_status = 'approved' WHERE id = ?`).run(id);
+  const insertResult = db.prepare(
+    `INSERT INTO behavior_changes (feature, change_summary, before_text, approved_by)
+     VALUES (?, ?, ?, 'max')`,
+  ).run(
+    row.feature,
+    row.proposed_fix,
+    `qa_score_id=${row.id}; week=${row.week}; score=${row.score}; created_at=${row.created_at}`,
+  );
+
+  return {
+    ...row,
+    fix_status: 'approved',
+    behavior_change_id: Number(insertResult.lastInsertRowid),
+  };
+}
+
+export function rejectQaFix(id: number): QaScore | null {
+  const row = getQaScoreById(id);
+  if (!row) return null;
+
+  db.prepare(`UPDATE qa_scores SET fix_status = 'rejected' WHERE id = ?`).run(id);
+  return { ...row, fix_status: 'rejected' };
 }
 
 /**

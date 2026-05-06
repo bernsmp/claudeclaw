@@ -12,6 +12,7 @@ const KEEP_ACTIVE = new Set([
   'a347459b',          // billing alert
   'cfdfb1e3',          // week-ahead brief
   'weekly-ai-radar',   // ai radar
+  'claude-routines-review',
   'ai-watchlist-review',
   'weekly-qa-loop',
   'typefully-sync',

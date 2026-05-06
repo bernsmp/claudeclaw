@@ -1,5 +1,4 @@
 import crypto from 'crypto';
-import fs from 'fs';
 import path from 'path';
 
 import { runAgent, UsageInfo } from './agent.js';
@@ -24,6 +23,10 @@ export interface AgentInfo {
   id: string;
   name: string;
   description: string;
+}
+
+function normalizeDelegationText(text: string | null | undefined): string {
+  return (text ?? '').trim();
 }
 
 // ── Registry ─────────────────────────────────────────────────────────
@@ -157,20 +160,8 @@ export async function delegateToAgent(
   onProgress?.(`Delegating to ${agent.name}...`);
 
   try {
-    // Load agent config to get its system prompt
+    const agentConfig = loadAgentConfig(agentId);
     const agentDir = path.join(PROJECT_ROOT, 'agents', agentId);
-    const claudeMdPath = path.join(agentDir, 'CLAUDE.md');
-    let systemPrompt = '';
-    try {
-      systemPrompt = fs.readFileSync(claudeMdPath, 'utf-8');
-    } catch {
-      // No CLAUDE.md for this agent — that's fine
-    }
-
-    // Build the delegated prompt with agent role context
-    const fullPrompt = systemPrompt
-      ? `[Agent role — follow these instructions]\n${systemPrompt}\n[End agent role]\n\n${prompt}`
-      : prompt;
 
     // Create an AbortController with timeout
     const abortCtrl = new AbortController();
@@ -178,23 +169,49 @@ export async function delegateToAgent(
 
     try {
       const result = await runAgent(
-        fullPrompt,
+        prompt,
         undefined, // fresh session for each delegation
         () => {}, // no typing indicator needed for sub-delegation
         undefined, // no progress callback for inner agent
-        undefined, // use default model
+        {
+          cwd: agentDir,
+          model: agentConfig.model,
+          source: 'delegation',
+          chatId,
+        },
         abortCtrl,
       );
 
       clearTimeout(timer);
 
       const durationMs = Date.now() - start;
-      completeInterAgentTask(taskId, 'completed', result.text);
+      const normalizedText = normalizeDelegationText(result.text);
+
+      if (normalizedText.length === 0) {
+        const detail = `Delegated agent ${agentId} returned an empty result`;
+        completeInterAgentTask(taskId, 'failed', detail);
+        logToHiveMind(
+          agentId,
+          chatId,
+          'delegate_degraded',
+          `Delegation from ${fromAgent} degraded: empty result from ${agentId}`,
+          JSON.stringify({
+            priority: 'high',
+            source_agent: fromAgent,
+            delegated_agent: agentId,
+            detail,
+            retryable: true,
+          }),
+        );
+        throw new Error(detail);
+      }
+
+      completeInterAgentTask(taskId, 'completed', normalizedText);
       logToHiveMind(
         agentId,
         chatId,
         'delegate_result',
-        `Completed delegation from ${fromAgent}: ${(result.text ?? '').slice(0, 120)}`,
+        `Completed delegation from ${fromAgent}: ${normalizedText.slice(0, 120)}`,
       );
 
       onProgress?.(
@@ -203,7 +220,7 @@ export async function delegateToAgent(
 
       return {
         agentId,
-        text: result.text,
+        text: normalizedText,
         usage: result.usage,
         taskId,
         durationMs,
@@ -330,7 +347,10 @@ export async function analyzeAndRoute(
       undefined, // fresh session
       () => {},
       undefined,
-      undefined,
+      {
+        source: 'router',
+        chatId,
+      },
     );
 
     const response = synthesisResult.text?.trim() || 'Plan completed.';

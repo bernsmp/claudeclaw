@@ -46,11 +46,14 @@ const db = new Database(DB_PATH);
 db.pragma('journal_mode = WAL');
 db.exec(`
   CREATE TABLE IF NOT EXISTS wa_outbox (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    to_chat_id TEXT NOT NULL,
-    body       TEXT NOT NULL,
-    created_at INTEGER NOT NULL,
-    sent_at    INTEGER
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    to_chat_id        TEXT NOT NULL,
+    body              TEXT NOT NULL,
+    created_at        INTEGER NOT NULL,
+    sent_at           INTEGER,
+    approval_required INTEGER NOT NULL DEFAULT 1,
+    approved_at       INTEGER,
+    approval_source   TEXT DEFAULT ''
   );
   CREATE TABLE IF NOT EXISTS wa_messages (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -64,6 +67,13 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_wa_outbox_unsent  ON wa_outbox(sent_at)               WHERE sent_at IS NULL;
   CREATE INDEX IF NOT EXISTS idx_wa_messages_chat  ON wa_messages(chat_id, timestamp DESC);
 `);
+for (const sql of [
+  `ALTER TABLE wa_outbox ADD COLUMN approval_required INTEGER NOT NULL DEFAULT 1`,
+  `ALTER TABLE wa_outbox ADD COLUMN approved_at INTEGER`,
+  `ALTER TABLE wa_outbox ADD COLUMN approval_source TEXT DEFAULT ''`,
+]) {
+  try { db.exec(sql); } catch { /* already exists */ }
+}
 
 // ── WhatsApp client ─────────────────────────────────────────────────
 let ready = false;
@@ -114,7 +124,11 @@ client.on('message', async (msg: wwebjs.Message) => {
 function startOutboxPoller(): void {
   setInterval(async () => {
     const pending = db.prepare(
-      `SELECT id, to_chat_id, body FROM wa_outbox WHERE sent_at IS NULL ORDER BY created_at`,
+      `SELECT id, to_chat_id, body
+       FROM wa_outbox
+       WHERE sent_at IS NULL
+         AND (approval_required = 0 OR approved_at IS NOT NULL)
+       ORDER BY created_at`,
     ).all() as Array<{ id: number; to_chat_id: string; body: string }>;
 
     for (const item of pending) {
@@ -184,9 +198,9 @@ const server = http.createServer((req, res) => {
       try {
         const { chatId, text } = JSON.parse(body) as { chatId: string; text: string };
         if (!chatId || !text) { res.statusCode = 400; res.end(JSON.stringify({ error: 'chatId and text required' })); return; }
-        db.prepare(`INSERT INTO wa_outbox (to_chat_id, body, created_at) VALUES (?, ?, ?)`)
+        db.prepare(`INSERT INTO wa_outbox (to_chat_id, body, created_at, approval_required) VALUES (?, ?, ?, 1)`)
           .run(chatId, text, Math.floor(Date.now() / 1000));
-        res.end(JSON.stringify({ queued: true }));
+        res.end(JSON.stringify({ queued: true, approvalRequired: true }));
       } catch (err) {
         res.statusCode = 400;
         res.end(JSON.stringify({ error: String(err) }));

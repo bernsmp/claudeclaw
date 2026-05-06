@@ -65,6 +65,27 @@ describe('buildMemoryContext', () => {
     expect(result).toContain('[End memory context]');
   });
 
+  it('adds a session reset guard after /newchat or /forget', async () => {
+    mockSearchMemories.mockReturnValue([
+      {
+        id: 1,
+        chat_id: 'chat1',
+        topic_key: null,
+        content: 'Remembered claim',
+        sector: 'semantic',
+        salience: 1.0,
+        created_at: 100,
+        accessed_at: 100,
+      },
+    ]);
+    mockGetRecentMemories.mockReturnValue([]);
+
+    const result = await buildMemoryContext('chat1', 'what happened?', { afterSessionReset: true });
+    expect(result).toContain('[Session reset guard]');
+    expect(result).toContain('restored background context');
+    expect(result).toContain('Remembered claim');
+  });
+
   it('returns formatted string when recent memories exist', async () => {
     mockSearchMemories.mockReturnValue([]);
     mockGetRecentMemories.mockReturnValue([

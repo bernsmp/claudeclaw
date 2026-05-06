@@ -15,10 +15,28 @@ import {
   agentSystemPrompt,
   TYPING_REFRESH_MS,
 } from './config.js';
-import { clearSession, getRecentConversation, getRecentMemories, getSession, setSession, lookupWaChatId, saveWaMessageMap, saveTokenUsage } from './db.js';
+import {
+  approveQaFix,
+  clearSession,
+  countPendingDrafts,
+  getNextPendingDraft,
+  getOldestPendingDraft,
+  getPendingDraftById,
+  getPendingDraftByTelegramMessageId,
+  PendingDraft,
+  getRecentConversation,
+  getRecentMemories,
+  getSession,
+  logToHiveMind,
+  lookupWaChatId,
+  rejectQaFix,
+  saveWaMessageMap,
+  saveTokenUsage,
+  setSession,
+} from './db.js';
 import { logger } from './logger.js';
 import { downloadMedia, buildPhotoMessage, buildDocumentMessage, buildVideoMessage } from './media.js';
-import { buildMemoryContext, saveConversationTurn } from './memory.js';
+import { buildMemoryContext, saveConversationTurn, triggerLcmCompaction, getLcmEngine } from './memory.js';
 import { parseDelegation, delegateToAgent, getAvailableAgents, analyzeAndRoute } from './orchestrator.js';
 import { emitChatEvent, setProcessing, setActiveAbort, abortActiveQuery, getIsProcessing } from './state.js';
 
@@ -104,6 +122,8 @@ interface SlackStateList { mode: 'list'; convos: SlackConversation[] }
 interface SlackStateChat { mode: 'chat'; channelId: string; channelName: string }
 type SlackState = SlackStateList | SlackStateChat;
 const slackState = new Map<string, SlackState>();
+const pendingDraftCursor = new Map<string, number>();
+const freshSessionChats = new Set<string>();
 
 /**
  * Escape a string for safe inclusion in Telegram HTML messages.
@@ -128,6 +148,157 @@ function extractSelectionNumber(text: string): number | null {
   // "number 2", "num 2", "#2"
   const numMatch = trimmed.match(/^(?:number|num|no\.?|#)\s*(\d+)$/i);
   if (numMatch) return parseInt(numMatch[1]);
+  return null;
+}
+
+function parseQaFixApproval(text: string): { action: 'approve' | 'reject'; id: number; reason?: string } | null {
+  const approveMatch = text.match(/^approve fix\s+(\d+)\s*$/i);
+  if (approveMatch) {
+    return { action: 'approve', id: parseInt(approveMatch[1], 10) };
+  }
+
+  const rejectMatch = text.match(/^reject fix\s+(\d+)(?::|\s+)?\s*(.*)$/i);
+  if (rejectMatch) {
+    const reason = rejectMatch[2]?.trim();
+    return {
+      action: 'reject',
+      id: parseInt(rejectMatch[1], 10),
+      reason: reason || undefined,
+    };
+  }
+
+  return null;
+}
+
+type ReceiptSignal = 'yes' | 'no' | 'skip';
+
+function normaliseReceiptSignal(raw: string): ReceiptSignal | null {
+  const value = raw.trim().toLowerCase();
+  if (['y', 'yes'].includes(value)) return 'yes';
+  if (['n', 'no'].includes(value)) return 'no';
+  if (['s', 'skip'].includes(value)) return 'skip';
+  return null;
+}
+
+function parsePrecallReceipt(text: string): {
+  receiptCode: string;
+  usedBrief: ReceiptSignal;
+  changedCall: ReceiptSignal;
+  note?: string;
+} | null {
+  const match = text.match(/^(?:receipt|rr)\s+([a-z0-9-]+)\s+(y|yes|n|no|s|skip)\s+(y|yes|n|no|s|skip)(?:\s+(.+))?$/i);
+  if (!match) return null;
+
+  const usedBrief = normaliseReceiptSignal(match[2]);
+  const changedCall = normaliseReceiptSignal(match[3]);
+  if (!usedBrief || !changedCall) return null;
+
+  return {
+    receiptCode: match[1],
+    usedBrief,
+    changedCall,
+    note: match[4]?.trim() || undefined,
+  };
+}
+
+type PendingDraftCommand =
+  | { kind: 'review' }
+  | { kind: 'next' }
+  | { kind: 'action'; action: 'post' | 'schedule' | 'skip' | 'edit'; draftId?: number; details?: string };
+
+function parsePendingDraftCommand(text: string): PendingDraftCommand | null {
+  const trimmed = text.trim();
+
+  if (/^(review one-by-one|resurface pending (?:bp|beyond prompts) draft|show pending (?:bp|beyond prompts) draft)$/i.test(trimmed)) {
+    return { kind: 'review' };
+  }
+
+  if (/^(next (?:bp|beyond prompts) draft|next draft)$/i.test(trimmed)) {
+    return { kind: 'next' };
+  }
+
+  const editMatch = trimmed.match(/^edit(?:\s+(\d+))?(?:\s+(.+))?$/i);
+  if (editMatch) {
+    return {
+      kind: 'action',
+      action: 'edit',
+      draftId: editMatch[1] ? parseInt(editMatch[1], 10) : undefined,
+      details: editMatch[2]?.trim() || undefined,
+    };
+  }
+
+  const actionMatch = trimmed.match(/^(post|schedule|skip)(?:\s+(\d+))?(?:\s+(.+))?$/i);
+  if (!actionMatch) return null;
+
+  return {
+    kind: 'action',
+    action: actionMatch[1].toLowerCase() as 'post' | 'schedule' | 'skip',
+    draftId: actionMatch[2] ? parseInt(actionMatch[2], 10) : undefined,
+    details: actionMatch[3]?.trim() || undefined,
+  };
+}
+
+function previewDraftText(text: string, maxLength = 280): string {
+  const compact = text.replace(/\s+/g, ' ').trim();
+  if (compact.length <= maxLength) return compact;
+  return `${compact.slice(0, maxLength - 1)}…`;
+}
+
+function formatDraftReviewMessage(draft: PendingDraft, totalAwaiting: number): string {
+  const source = draft.source || 'unknown';
+  return [
+    `📝 Beyond Prompts draft ${draft.id}`,
+    `Awaiting queue: ${totalAwaiting}`,
+    `Source: ${source}`,
+    '',
+    previewDraftText(draft.draft_text, 900),
+    '',
+    `Reply: schedule ${draft.id} · post ${draft.id} · skip ${draft.id} · edit ${draft.id} [changes]`,
+    'Use `next bp draft` to move forward without acting on this one.',
+  ].join('\n');
+}
+
+function formatDraftAnchor(commandText: string, draft: PendingDraft, details?: string): string {
+  const lines = [
+    '[Pending draft command anchor]',
+    `Max said: ${commandText}`,
+    `Operate only on pending_drafts row id=${draft.id}.`,
+    `Account: ${draft.account}`,
+    `Platform: ${draft.platform}`,
+    `Status: ${draft.status}`,
+    `Source: ${draft.source || 'unknown'}`,
+    `Draft text: ${draft.draft_text}`,
+    'Do not fetch the oldest awaiting draft. Do not touch any other draft row.',
+    'Record all results back onto this same pending_drafts row.',
+  ];
+
+  if (details) {
+    lines.push(`Requested details: ${details}`);
+  }
+
+  return lines.join('\n');
+}
+
+function resolvePendingDraftTarget(chatId: string, replyToMessageId: number | undefined, explicitDraftId?: number): PendingDraft | null {
+  if (explicitDraftId) {
+    return getPendingDraftById(explicitDraftId);
+  }
+
+  if (replyToMessageId) {
+    const byReply = getPendingDraftByTelegramMessageId(replyToMessageId);
+    if (byReply) return byReply;
+  }
+
+  const cursorId = pendingDraftCursor.get(chatId);
+  if (cursorId) {
+    const byCursor = getPendingDraftById(cursorId);
+    if (byCursor) return byCursor;
+  }
+
+  if (countPendingDrafts('awaiting', 'Beyond Prompts') === 1) {
+    return getOldestPendingDraft('Beyond Prompts');
+  }
+
   return null;
 }
 
@@ -480,7 +651,8 @@ async function handleMessageInner(ctx: Context, message: string, forceVoiceReply
   }
 
   // Build memory context and prepend to message
-  const memCtx = await buildMemoryContext(chatIdStr, message);
+  const afterSessionReset = freshSessionChats.has(chatIdStr);
+  const memCtx = await buildMemoryContext(chatIdStr, message, { afterSessionReset });
   const parts: string[] = [];
   if (agentSystemPrompt) parts.push(`[Agent role — follow these instructions]\n${agentSystemPrompt}\n[End agent role]`);
   if (memCtx) parts.push(memCtx);
@@ -521,7 +693,12 @@ async function handleMessageInner(ctx: Context, message: string, forceVoiceReply
       sessionId,
       () => void sendTyping(ctx.api, chatId),
       onProgress,
-      chatModelOverride.get(chatIdStr) ?? agentDefaultModel,
+      {
+        model: chatModelOverride.get(chatIdStr) ?? agentDefaultModel,
+        source: 'manual',
+        chatId: chatIdStr,
+        shadowSafetyText: message,
+      },
       abortCtrl,
     );
 
@@ -540,6 +717,8 @@ async function handleMessageInner(ctx: Context, message: string, forceVoiceReply
       setSession(chatIdStr, result.newSessionId, AGENT_ID);
       logger.info({ newSessionId: result.newSessionId }, 'Session saved');
     }
+
+    freshSessionChats.delete(chatIdStr);
 
     const rawResponse = result.text?.trim() || 'Done.';
 
@@ -621,6 +800,13 @@ async function handleMessageInner(ctx: Context, message: string, forceVoiceReply
       if (warning) {
         await ctx.reply(warning);
       }
+
+      // Trigger LCM compaction when CLI auto-compacts
+      if (result.usage.didCompact && activeSessionId) {
+        triggerLcmCompaction(activeSessionId, result.usage.lastCallInputTokens).catch(
+          (err: unknown) => logger.error({ err }, 'LCM compaction failed'),
+        );
+      }
     }
 
     setProcessing(chatIdStr, false);
@@ -687,6 +873,8 @@ export function createBot(): Bot {
       '/forget — Clear session\n' +
       '/wa — WhatsApp messages\n' +
       '/slack — Slack messages\n' +
+      '/recall <query> — Search full conversation history\n' +
+      '/lcmstats — LCM memory statistics\n' +
       '/dashboard — Web dashboard\n' +
       '/stop — Stop current processing\n\n' +
       'You can also send voice notes, photos, files, and videos.'
@@ -719,7 +907,8 @@ export function createBot(): Bot {
     // Clear context baseline so next session starts clean
     if (oldSessionId) sessionBaseline.delete(oldSessionId);
     sessionBaseline.delete(chatIdStr);
-    await ctx.reply('Session cleared. Starting fresh.');
+    freshSessionChats.add(chatIdStr);
+    await ctx.reply('Session cleared. Fresh Claude session started. Durable memory may still be recalled unless you keep going from a blank slate.');
     logger.info({ chatId: ctx.chat!.id }, 'Session cleared by user');
   });
 
@@ -727,6 +916,7 @@ export function createBot(): Bot {
   bot.command('respin', async (ctx) => {
     if (!isAuthorised(ctx.chat!.id)) return;
     const chatIdStr = ctx.chat!.id.toString();
+    freshSessionChats.delete(chatIdStr);
 
     // Pull the last 20 turns (10 back-and-forth exchanges) from conversation_log
     const turns = getRecentConversation(chatIdStr, 20);
@@ -748,6 +938,67 @@ export function createBot(): Bot {
 
     await ctx.reply('Respinning with recent conversation context...');
     await handleMessage(ctx, respinContext, false, true);
+  });
+
+  // /recall — search full conversation history via LCM DAG
+  bot.command('recall', async (ctx) => {
+    if (!isAuthorised(ctx.chat!.id)) return;
+    const query = ctx.match?.trim();
+    if (!query) {
+      await ctx.reply('Usage: /recall <search query>\n\nSearches your full conversation history across all sessions.');
+      return;
+    }
+
+    const lcm = getLcmEngine();
+    if (!lcm) {
+      await ctx.reply('LCM engine not initialized.');
+      return;
+    }
+
+    try {
+      const results = lcm.search(query, 10);
+      if (results.length === 0) {
+        await ctx.reply(`No results for "${query}"`);
+        return;
+      }
+
+      const lines = results.map((r, i) => {
+        const prefix = r.type === 'summary'
+          ? `📋 [${r.kind} summary]`
+          : `💬 [${r.role}]`;
+        const date = r.createdAt.slice(0, 16).replace('T', ' ');
+        const snippet = r.snippet.length > 200
+          ? r.snippet.slice(0, 200) + '...'
+          : r.snippet;
+        return `${i + 1}. ${prefix} ${date}\n${snippet}`;
+      });
+
+      const stats = lcm.getStats();
+      const header = `🔍 Found ${results.length} results for "${query}"\n(${stats.messages} messages, ${stats.summaries} summaries in DAG)\n\n`;
+      await ctx.reply(header + lines.join('\n\n'));
+    } catch (err) {
+      logger.error({ err, query }, 'LCM recall failed');
+      await ctx.reply('Search failed. Check logs.');
+    }
+  });
+
+  // /lcm-stats — show LCM DAG statistics
+  bot.command('lcmstats', async (ctx) => {
+    if (!isAuthorised(ctx.chat!.id)) return;
+    const lcm = getLcmEngine();
+    if (!lcm) {
+      await ctx.reply('LCM engine not initialized.');
+      return;
+    }
+    const stats = lcm.getStats();
+    await ctx.reply(
+      `📊 LCM DAG Stats\n\n` +
+      `Conversations: ${stats.conversations}\n` +
+      `Messages stored: ${stats.messages}\n` +
+      `Summaries: ${stats.summaries} (${stats.leafSummaries} leaf, ${stats.condensedSummaries} condensed)\n` +
+      `Max DAG depth: ${stats.maxDepth}\n` +
+      `Credit alerts: ${lcm.hasRecentCreditAlert() ? '⚠️ recent alert' : '✅ none'}`,
+    );
   });
 
   // /voice — toggle voice mode for this chat
@@ -816,8 +1067,11 @@ export function createBot(): Bot {
   // /forget — clear session (memory decay handles the rest)
   bot.command('forget', async (ctx) => {
     if (!isAuthorised(ctx.chat!.id)) return;
-    clearSession(ctx.chat!.id.toString(), AGENT_ID);
-    await ctx.reply('Session cleared. Memories will fade naturally over time.');
+    const chatIdStr = ctx.chat!.id.toString();
+    clearSession(chatIdStr, AGENT_ID);
+    sessionBaseline.delete(chatIdStr);
+    freshSessionChats.add(chatIdStr);
+    await ctx.reply('Session cleared. Durable memory still exists and may be recalled later unless re-verified.');
   });
 
   // /wa — pull recent WhatsApp chats on demand
@@ -923,6 +1177,112 @@ export function createBot(): Bot {
     if (text.startsWith('/')) {
       const cmd = text.split(/[\s@]/)[0].toLowerCase();
       if (OWN_COMMANDS.has(cmd)) return; // already handled by bot.command() above
+    }
+
+    const qaFixAction = parseQaFixApproval(text);
+    if (qaFixAction) {
+      const result = qaFixAction.action === 'approve'
+        ? approveQaFix(qaFixAction.id)
+        : rejectQaFix(qaFixAction.id);
+
+      const response = !result
+        ? `Could not find QA fix ${qaFixAction.id}.`
+        : qaFixAction.action === 'approve'
+          ? `✅ Approved fix ${result.id} for ${result.feature}. Logged to behavior_changes row ${'behavior_change_id' in result ? result.behavior_change_id : 'unknown'}.`
+          : `🟡 Rejected fix ${result.id} for ${result.feature}${qaFixAction.reason ? ` — ${qaFixAction.reason}` : ''}.`;
+
+      saveConversationTurn(chatIdStr, text, response, undefined, AGENT_ID);
+      emitChatEvent({ type: 'user_message', chatId: chatIdStr, content: text, source: 'telegram' });
+      emitChatEvent({ type: 'assistant_message', chatId: chatIdStr, content: response, source: 'telegram' });
+      await ctx.reply(response);
+      return;
+    }
+
+    const precallReceipt = parsePrecallReceipt(text);
+    if (precallReceipt) {
+      const artifacts = JSON.stringify({
+        priority: 'high',
+        receipt_code: precallReceipt.receiptCode,
+        used_brief: precallReceipt.usedBrief,
+        changed_call: precallReceipt.changedCall,
+        note: precallReceipt.note ?? null,
+        checkpoints: [3],
+      });
+      const summary = `Pre-call receipt ${precallReceipt.receiptCode}: used=${precallReceipt.usedBrief}, changed=${precallReceipt.changedCall}${precallReceipt.note ? ` — ${precallReceipt.note}` : ''}`;
+      logToHiveMind('butters-receipts', chatIdStr, 'precall_receipt', summary, artifacts);
+
+      const response = `Receipt saved for ${precallReceipt.receiptCode}: used=${precallReceipt.usedBrief}, changed=${precallReceipt.changedCall}${precallReceipt.note ? ` — ${precallReceipt.note}` : ''}.`;
+      saveConversationTurn(chatIdStr, text, response, undefined, AGENT_ID);
+      emitChatEvent({ type: 'user_message', chatId: chatIdStr, content: text, source: 'telegram' });
+      emitChatEvent({ type: 'assistant_message', chatId: chatIdStr, content: response, source: 'telegram' });
+      await ctx.reply(response);
+      return;
+    }
+
+    const replyToId = ctx.message.reply_to_message?.message_id;
+    const pendingDraftCommand = parsePendingDraftCommand(text);
+    const awaitingBpDrafts = countPendingDrafts('awaiting', 'Beyond Prompts');
+    const hasPendingDraftContext =
+      Boolean(replyToId)
+      || pendingDraftCursor.has(chatIdStr)
+      || Boolean(pendingDraftCommand && pendingDraftCommand.kind === 'action' && pendingDraftCommand.draftId)
+      || awaitingBpDrafts === 1;
+
+    if (pendingDraftCommand && (pendingDraftCommand.kind !== 'action' || hasPendingDraftContext)) {
+      if (pendingDraftCommand.kind === 'review') {
+        const draft = getOldestPendingDraft('Beyond Prompts');
+        if (!draft) {
+          await ctx.reply('No awaiting Beyond Prompts drafts right now.');
+          return;
+        }
+
+        pendingDraftCursor.set(chatIdStr, draft.id);
+        await ctx.reply(formatDraftReviewMessage(draft, awaitingBpDrafts));
+        return;
+      }
+
+      if (pendingDraftCommand.kind === 'next') {
+        const currentId = pendingDraftCursor.get(chatIdStr);
+        const currentDraft = currentId ? getPendingDraftById(currentId) : null;
+        const nextDraft = currentDraft
+          ? getNextPendingDraft('Beyond Prompts', currentDraft.timestamp, currentDraft.id)
+          : getOldestPendingDraft('Beyond Prompts');
+
+        if (!nextDraft) {
+          await ctx.reply('No later awaiting Beyond Prompts drafts. Use `review one-by-one` to start from the oldest again.');
+          return;
+        }
+
+        pendingDraftCursor.set(chatIdStr, nextDraft.id);
+        await ctx.reply(formatDraftReviewMessage(nextDraft, awaitingBpDrafts));
+        return;
+      }
+
+      const targetDraft = resolvePendingDraftTarget(chatIdStr, replyToId, pendingDraftCommand.draftId);
+      if (!targetDraft) {
+        if (awaitingBpDrafts === 0) {
+          await ctx.reply('No awaiting Beyond Prompts drafts right now.');
+        } else {
+          await ctx.reply('I need a draft ID for that. Use `review one-by-one` first, or send `schedule 143`, `skip 143`, or `edit 143 ...`.');
+        }
+        return;
+      }
+
+      if (targetDraft.status !== 'awaiting') {
+        await ctx.reply(`Draft ${targetDraft.id} is ${targetDraft.status}, not awaiting. Use another draft ID.`);
+        return;
+      }
+
+      if (pendingDraftCommand.action === 'edit' && !pendingDraftCommand.details) {
+        pendingDraftCursor.set(chatIdStr, targetDraft.id);
+        await ctx.reply(`Reply with \`edit ${targetDraft.id} [changes]\` so I know exactly what to rewrite.`);
+        return;
+      }
+
+      pendingDraftCursor.set(chatIdStr, targetDraft.id);
+      const anchoredText = formatDraftAnchor(text, targetDraft, pendingDraftCommand.details);
+      handleMessage(ctx, anchoredText).catch((err) => logger.error({ err }, 'Unhandled pending draft action'));
+      return;
     }
 
     // ── WhatsApp state machine ──────────────────────────────────────
@@ -1057,7 +1417,6 @@ export function createBot(): Bot {
     }
 
     // Legacy: Telegram-native reply to a forwarded WA message
-    const replyToId = ctx.message.reply_to_message?.message_id;
     if (replyToId) {
       const waTarget = lookupWaChatId(replyToId);
       if (waTarget) {
@@ -1242,7 +1601,8 @@ export async function processMessageFromDashboard(
   setProcessing(chatIdStr, true);
 
   try {
-    const memCtx = await buildMemoryContext(chatIdStr, text);
+    const afterSessionReset = freshSessionChats.has(chatIdStr);
+    const memCtx = await buildMemoryContext(chatIdStr, text, { afterSessionReset });
     const dashParts: string[] = [];
     if (agentSystemPrompt) dashParts.push(`[Agent role — follow these instructions]\n${agentSystemPrompt}\n[End agent role]`);
     if (memCtx) dashParts.push(memCtx);
@@ -1262,11 +1622,17 @@ export async function processMessageFromDashboard(
       sessionId,
       () => {}, // no typing action for dashboard
       onProgress,
-      agentDefaultModel,
+      {
+        model: agentDefaultModel,
+        source: 'dashboard',
+        chatId: chatIdStr,
+        shadowSafetyText: text,
+      },
       abortCtrl,
     );
 
     setActiveAbort(chatIdStr, null);
+    freshSessionChats.delete(chatIdStr);
 
     // Handle abort
     if (result.aborted) {

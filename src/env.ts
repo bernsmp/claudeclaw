@@ -1,5 +1,19 @@
 import fs from 'fs';
 import path from 'path';
+import { fileURLToPath } from 'url';
+
+const moduleDir = path.dirname(fileURLToPath(import.meta.url));
+const projectRoot = path.resolve(moduleDir, '..');
+
+function candidateEnvPaths(): string[] {
+  const explicit = process.env.CLAUDECLAW_ENV;
+  const cwdEnv = path.join(process.cwd(), '.env');
+  const rootEnv = path.join(projectRoot, '.env');
+
+  return [explicit, cwdEnv, rootEnv].filter(
+    (value): value is string => typeof value === 'string' && value.length > 0,
+  );
+}
 
 /**
  * Parse the .env file and return values for the requested keys.
@@ -8,13 +22,18 @@ import path from 'path';
  * so they don't leak to child processes.
  */
 export function readEnvFile(keys: string[]): Record<string, string> {
-  const envFile = path.join(process.cwd(), '.env');
-  let content: string;
-  try {
-    content = fs.readFileSync(envFile, 'utf-8');
-  } catch {
-    return {};
+  let content = '';
+  let found = false;
+  for (const envFile of candidateEnvPaths()) {
+    try {
+      content = fs.readFileSync(envFile, 'utf-8');
+      found = true;
+      break;
+    } catch {
+      // Try the next candidate.
+    }
   }
+  if (!found) return {};
 
   const result: Record<string, string> = {};
   const wanted = new Set(keys);

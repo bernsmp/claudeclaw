@@ -1,4 +1,4 @@
-export function getDashboardHtml(token: string, chatId: string): string {
+export function getDashboardHtml(chatId: string): string {
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -256,7 +256,6 @@ export function getDashboardHtml(token: string, chatId: string): string {
 </div>
 
 <script>
-const TOKEN = ${JSON.stringify(token)};
 const CHAT_ID = ${JSON.stringify(chatId)};
 const BASE = location.origin;
 
@@ -349,8 +348,7 @@ function closeDrawer() {
 }
 
 function api(path) {
-  const sep = path.includes('?') ? '&' : '?';
-  return fetch(BASE + path + sep + 'token=' + TOKEN).then(r => r.json());
+  return fetch(BASE + path, { credentials: 'same-origin' }).then(r => r.json());
 }
 
 let salienceChart, memTimelineChart, costChart, cacheChart;
@@ -390,9 +388,9 @@ function countdown(ts) {
 async function taskAction(id, action) {
   try {
     if (action === 'delete') {
-      await fetch(BASE + '/api/tasks/' + id + '?token=' + TOKEN, { method: 'DELETE' });
+      await fetch(BASE + '/api/tasks/' + id, { method: 'DELETE', credentials: 'same-origin' });
     } else {
-      await fetch(BASE + '/api/tasks/' + id + '/' + action + '?token=' + TOKEN, { method: 'POST' });
+      await fetch(BASE + '/api/tasks/' + id + '/' + action, { method: 'POST', credentials: 'same-origin' });
     }
     await loadTasks();
   } catch(e) { console.error('Task action failed:', e); }
@@ -558,7 +556,7 @@ function escapeHtml(s) {
 
 async function loadInfo() {
   try {
-    const r = await fetch(BASE + '/api/info?token=' + TOKEN + '&chatId=' + CHAT_ID);
+    const r = await fetch(BASE + '/api/info?chatId=' + CHAT_ID, { credentials: 'same-origin' });
     const d = await r.json();
     const el = document.getElementById('bot-info');
     const parts = [];
@@ -755,7 +753,7 @@ async function loadChatHistory() {
 
 function connectChatSSE() {
   if (chatSSE) { chatSSE.close(); chatSSE = null; }
-  const url = BASE + '/api/chat/stream?token=' + TOKEN;
+  const url = BASE + '/api/chat/stream';
   chatSSE = new EventSource(url);
 
   chatSSE.addEventListener('user_message', function(e) {
@@ -879,8 +877,9 @@ async function sendChatMessage() {
   // Disable send while processing
   document.getElementById('chat-send-btn').disabled = true;
   try {
-    await fetch(BASE + '/api/chat/send?token=' + TOKEN, {
+    await fetch(BASE + '/api/chat/send', {
       method: 'POST',
+      credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ message: text }),
     });
@@ -899,7 +898,7 @@ function autoResizeInput() {
 
 async function abortProcessing() {
   try {
-    await fetch(BASE + '/api/chat/abort?token=' + TOKEN, { method: 'POST' });
+    await fetch(BASE + '/api/chat/abort', { method: 'POST', credentials: 'same-origin' });
   } catch(e) { console.error('Abort error', e); }
 }
 </script>

@@ -38,6 +38,7 @@ const TASK_OUTPUT_POLICIES: Record<string, TaskOutputPolicy> = {
   'a347459b': 'actionable',         // billing alert
   'cfdfb1e3': 'actionable',         // week-ahead brief
   'weekly-ai-radar': 'actionable',
+  'claude-routines-review': 'actionable',
   'ai-watchlist-review': 'actionable',
   'weekly-qa-loop': 'actionable',
   'typefully-sync': 'silent',
@@ -168,7 +169,11 @@ async function executeTask(task: { id: string; prompt: string | Buffer }): Promi
   }
 
   // Standard execution — run as main agent
-  const result = await runAgent(prompt, undefined, () => {});
+  const result = await runAgent(prompt, undefined, () => {}, undefined, {
+    source: 'scheduler',
+    chatId: 'system',
+    taskId: task.id,
+  });
   return result.text?.trim() || '';
 }
 
