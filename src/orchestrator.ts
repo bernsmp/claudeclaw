@@ -3,7 +3,7 @@ import fs from 'fs';
 import path from 'path';
 
 import { runAgent, UsageInfo } from './agent.js';
-import { loadAgentConfig, listAgentIds, resolveAgentClaudeMd } from './agent-config.js';
+import { loadAgentConfig, listAgentIds, resolveAgentClaudeMd, resolveAgentDir } from './agent-config.js';
 import { PROJECT_ROOT } from './config.js';
 import { logToHiveMind, createInterAgentTask, completeInterAgentTask } from './db.js';
 import { logger } from './logger.js';
@@ -196,6 +196,11 @@ export async function delegateToAgent(
         abortCtrl,
         undefined, // no streaming for delegation
         agentConfig.mcpServers,
+        {
+          cwd: resolveAgentDir(agentId),
+          source: 'delegation',
+          chatId,
+        },
       );
 
       clearTimeout(timer);

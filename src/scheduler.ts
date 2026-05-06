@@ -92,7 +92,22 @@ async function runDueTasks(): Promise<void> {
         await sender(`Scheduled task running: "${task.prompt.slice(0, 80)}${task.prompt.length > 80 ? '...' : ''}"`);
 
         // Run as a fresh agent call (no session — scheduled tasks are autonomous)
-        const result = await runAgent(task.prompt, undefined, () => {}, undefined, undefined, abortController, undefined, agentMcpAllowlist);
+        const result = await runAgent(
+          task.prompt,
+          undefined,
+          () => {},
+          undefined,
+          undefined,
+          abortController,
+          undefined,
+          agentMcpAllowlist,
+          {
+            source: 'scheduler',
+            chatId,
+            taskId: task.id,
+            shadowSafetyText: task.prompt,
+          },
+        );
         clearTimeout(timeout);
 
         if (result.aborted) {
@@ -154,7 +169,22 @@ async function runDueMissionTasks(): Promise<void> {
     const timeout = setTimeout(() => abortController.abort(), TASK_TIMEOUT_MS);
 
     try {
-      const result = await runAgent(mission.prompt, undefined, () => {}, undefined, undefined, abortController, undefined, agentMcpAllowlist);
+      const result = await runAgent(
+        mission.prompt,
+        undefined,
+        () => {},
+        undefined,
+        undefined,
+        abortController,
+        undefined,
+        agentMcpAllowlist,
+        {
+          source: 'scheduler',
+          chatId,
+          taskId: `mission-${mission.id}`,
+          shadowSafetyText: mission.prompt,
+        },
+      );
       clearTimeout(timeout);
 
       if (result.aborted) {

@@ -540,6 +540,11 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
       abortCtrl,
       onStreamText,
       agentMcpAllowlist,
+      {
+        source: 'manual',
+        chatId: chatIdStr,
+        shadowSafetyText: message,
+      },
     );
 
     clearTimeout(timeoutId);
@@ -1547,6 +1552,11 @@ async function processDashboardMessage(
       abortCtrl,
       undefined, // no streaming for dashboard
       agentMcpAllowlist,
+      {
+        source: 'dashboard',
+        chatId: chatIdStr,
+        shadowSafetyText: text,
+      },
     );
 
     clearTimeout(dashTimeout);

@@ -3,8 +3,17 @@ import path from 'path';
 
 import { query } from '@anthropic-ai/claude-agent-sdk';
 
-import { AGENT_MAX_TURNS, PROJECT_ROOT, agentCwd } from './config.js';
+import {
+  AGENT_BACKEND,
+  AGENT_MAX_TURNS,
+  HERMES_SCHEDULER_TASK_IDS,
+  PROJECT_ROOT,
+  agentCwd,
+  type AgentBackend,
+} from './config.js';
+import { logToHiveMind } from './db.js';
 import { readEnvFile } from './env.js';
+import { runHermesAgent } from './hermes-runner.js';
 import { logger } from './logger.js';
 
 // ── MCP server loading ──────────────────────────────────────────────
@@ -123,6 +132,164 @@ export interface AgentResult {
   aborted?: boolean;
 }
 
+export type AgentSource =
+  | 'manual'
+  | 'dashboard'
+  | 'scheduler'
+  | 'delegation'
+  | 'router'
+  | 'unknown';
+
+export interface RunAgentOptions {
+  cwd?: string;
+  source?: AgentSource;
+  chatId?: string;
+  taskId?: string;
+  shadowSafetyText?: string;
+}
+
+function sourceAllowsHermes(
+  options?: RunAgentOptions,
+  schedulerTaskIds: ReadonlySet<string> = HERMES_SCHEDULER_TASK_IDS,
+): boolean {
+  const source = options?.source ?? 'unknown';
+  if (source === 'manual' || source === 'dashboard') return true;
+
+  if (source === 'scheduler' && options?.taskId) {
+    return schedulerTaskIds.has(options.taskId);
+  }
+
+  return false;
+}
+
+export function resolveAgentBackend(
+  configuredBackend: AgentBackend,
+  options?: RunAgentOptions,
+  schedulerTaskIds: ReadonlySet<string> = HERMES_SCHEDULER_TASK_IDS,
+): AgentBackend {
+  if (configuredBackend === 'claude') return 'claude';
+  if (!sourceAllowsHermes(options, schedulerTaskIds)) return 'claude';
+  return configuredBackend;
+}
+
+function logHermesShadowResult(
+  status: 'success' | 'failed',
+  options: RunAgentOptions | undefined,
+  startedAt: number,
+  resultOrError: AgentResult | unknown,
+): void {
+  const durationMs = Date.now() - startedAt;
+  const chatId = options?.chatId || 'system';
+  const source = options?.source ?? 'unknown';
+  const taskId = options?.taskId;
+
+  try {
+    if (status === 'success') {
+      const result = resultOrError as AgentResult;
+      const text = result.text?.trim() || '';
+      logToHiveMind(
+        'hermes-shadow',
+        chatId,
+        'agent_shadow',
+        `Hermes shadow completed for ${source}${taskId ? ` task ${taskId}` : ''}: ${text.slice(0, 500)}`,
+        JSON.stringify({
+          status,
+          source,
+          taskId,
+          duration_ms: durationMs,
+          text,
+          new_session_id: result.newSessionId,
+        }),
+      );
+      return;
+    }
+
+    const err = resultOrError instanceof Error ? resultOrError.message : String(resultOrError);
+    logToHiveMind(
+      'hermes-shadow',
+      chatId,
+      'agent_shadow_failed',
+      `Hermes shadow failed for ${source}${taskId ? ` task ${taskId}` : ''}: ${err.slice(0, 500)}`,
+      JSON.stringify({
+        status,
+        source,
+        taskId,
+        duration_ms: durationMs,
+        error: err,
+      }),
+    );
+  } catch (dbErr) {
+    logger.error({ err: dbErr }, 'Failed to record Hermes shadow result');
+  }
+}
+
+export function isSafeForHermesShadow(message: string): boolean {
+  const compact = message.toLowerCase().replace(/\s+/g, ' ').trim();
+  const obviousMutation = /\b(write|edit|update|delete|remove|apply|patch|commit|push|deploy|send|post|schedule|publish|create|add|install|rebuild|restart|start|stop|run|execute|fix|mark|clear|archive|move|copy)\b/.test(compact);
+  if (obviousMutation) return false;
+
+  return /\b(check|review|explain|summarize|analyse|analyze|compare|find|search|look up|what|why|how|list|show|audit|inspect)\b/.test(compact);
+}
+
+function runHermesShadow(
+  message: string,
+  sessionId: string | undefined,
+  abortController: AbortController | undefined,
+  options?: RunAgentOptions,
+): void {
+  const safetyText = options?.shadowSafetyText ?? message;
+  if (!isSafeForHermesShadow(safetyText)) {
+    try {
+      logToHiveMind(
+        'hermes-shadow',
+        options?.chatId || 'system',
+        'agent_shadow_skipped',
+        `Hermes shadow skipped for ${options?.source ?? 'unknown'} because prompt was not read-only safe.`,
+        JSON.stringify({
+          source: options?.source ?? 'unknown',
+          taskId: options?.taskId,
+          reason: 'not_read_only_safe',
+        }),
+      );
+    } catch (dbErr) {
+      logger.error({ err: dbErr }, 'Failed to record Hermes shadow skip');
+    }
+    return;
+  }
+
+  const startedAt = Date.now();
+  void runHermesAgent(message, sessionId, () => {}, undefined, options, abortController)
+    .then((result) => logHermesShadowResult('success', options, startedAt, result))
+    .catch((err) => logHermesShadowResult('failed', options, startedAt, err));
+}
+
+function logHermesFallback(
+  options: RunAgentOptions | undefined,
+  err: unknown,
+): void {
+  const source = options?.source ?? 'unknown';
+  const chatId = options?.chatId || 'system';
+  const taskId = options?.taskId;
+  const detail = err instanceof Error ? err.message : String(err);
+
+  try {
+    logToHiveMind(
+      'hermes',
+      chatId,
+      'agent_backend_fallback',
+      `Hermes backend failed for ${source}${taskId ? ` task ${taskId}` : ''}; falling back to Claude: ${detail.slice(0, 500)}`,
+      JSON.stringify({
+        source,
+        taskId,
+        error: detail,
+        fallback: 'claude',
+      }),
+    );
+  } catch (dbErr) {
+    logger.error({ err: dbErr }, 'Failed to record Hermes fallback');
+  }
+}
+
 /**
  * A minimal AsyncIterable that yields a single user message then closes.
  * This is the format the Claude Agent SDK expects for its `prompt` parameter.
@@ -159,7 +326,7 @@ async function* singleTurn(text: string): AsyncGenerator<{
  * @param onTyping   Called every TYPING_REFRESH_MS while waiting — sends typing action to Telegram
  * @param onProgress Called when sub-agents start/complete — sends status updates to Telegram
  */
-export async function runAgent(
+async function runClaudeAgent(
   message: string,
   sessionId: string | undefined,
   onTyping: () => void,
@@ -168,6 +335,7 @@ export async function runAgent(
   abortController?: AbortController,
   onStreamText?: (accumulatedText: string) => void,
   mcpAllowlist?: string[],
+  options?: RunAgentOptions,
 ): Promise<AgentResult> {
   // Read secrets from .env without polluting process.env.
   // CLAUDE_CODE_OAUTH_TOKEN is optional — the subprocess finds auth via ~/.claude/
@@ -212,7 +380,7 @@ export async function runAgent(
       options: {
         // cwd = agent directory (if running as agent) or project root.
         // Claude Code loads CLAUDE.md from cwd via settingSources: ['project'].
-        cwd: agentCwd ?? PROJECT_ROOT,
+        cwd: options?.cwd ?? agentCwd ?? PROJECT_ROOT,
 
         // Resume the previous session for this chat (persistent context)
         resume: sessionId,
@@ -367,4 +535,54 @@ export async function runAgent(
   }
 
   return { text: resultText, newSessionId, usage };
+}
+
+export async function runAgent(
+  message: string,
+  sessionId: string | undefined,
+  onTyping: () => void,
+  onProgress?: (event: AgentProgressEvent) => void,
+  model?: string,
+  abortController?: AbortController,
+  onStreamText?: (accumulatedText: string) => void,
+  mcpAllowlist?: string[],
+  options?: RunAgentOptions,
+): Promise<AgentResult> {
+  const backend = resolveAgentBackend(AGENT_BACKEND, options);
+
+  if (backend === 'shadow') {
+    runHermesShadow(message, sessionId, abortController, options);
+    return runClaudeAgent(
+      message,
+      sessionId,
+      onTyping,
+      onProgress,
+      model,
+      abortController,
+      onStreamText,
+      mcpAllowlist,
+      options,
+    );
+  }
+
+  if (backend === 'hermes') {
+    try {
+      return await runHermesAgent(message, sessionId, onTyping, onProgress, options, abortController);
+    } catch (err) {
+      logHermesFallback(options, err);
+      logger.error({ err }, 'Hermes backend failed, falling back to Claude');
+    }
+  }
+
+  return runClaudeAgent(
+    message,
+    sessionId,
+    onTyping,
+    onProgress,
+    model,
+    abortController,
+    onStreamText,
+    mcpAllowlist,
+    options,
+  );
 }
