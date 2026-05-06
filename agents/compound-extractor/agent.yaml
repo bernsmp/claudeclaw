@@ -1,0 +1,18 @@
+# Compound Extractor
+# Watches every client interaction and asks: what did this deposit into the compound loop?
+# Maps deposits against all 5 strategic checkpoints.
+
+name: Compound Extractor
+description: "Post-interaction analysis — maps every client deliverable, transcript, and closed loop against the 5 strategic checkpoints. Surfaces methodology patterns, content angles, reusable assets, and Cadence proof points."
+
+model: claude-sonnet-4-6
+background: true
+
+obsidian:
+  vault: /Users/maxb/Desktop/mb-brain
+  folders:
+    - "5 - Cognitive Fingerprint/"
+    - "4 - Content/"
+  read_only:
+    - "0 - System/ai-table/output/"
+    - "1 - Clients/"

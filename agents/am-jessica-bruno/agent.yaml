@@ -1,0 +1,17 @@
+# Account Manager Agent — Jessica Bruno / Four Generations One Roof
+# Cadence CF client. Weekly sessions, CF Content System project.
+
+name: "AM: Jessica Bruno"
+description: "Cadence account manager for Jessica Bruno / Four Generations One Roof — standard AM monitoring plus CF Content System pipeline tracking, DRIVE scoring, and pattern delivery"
+
+model: claude-sonnet-4-6
+background: true
+
+obsidian:
+  vault: /Users/maxb/Desktop/mb-brain
+  folders:
+    - "1 - Clients/Four Generations One Roof/"
+  read_only:
+    - "0 - System/Dashboards/"
+    - "0 - System/ai-table/output/"
+    - "5 - Cognitive Fingerprint/"

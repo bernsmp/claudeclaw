@@ -1,0 +1,22 @@
+# Account Manager Agent — TEMPLATE
+# Clone this folder, rename to am-{client-slug}/, customize CLAUDE.md with client specifics.
+#
+# No Telegram bot needed — AMs communicate via hive_mind table only.
+# Butters relays their findings to Max.
+
+name: "AM: {CLIENT_NAME}"
+description: "Account manager for {CLIENT_NAME} — monitors health, tracks team adoption, assembles pre-call context, flags risks and opportunities"
+
+# No direct Telegram — AMs are background agents
+# telegram_bot_token_env: AM_{SLUG}_BOT_TOKEN
+background: true
+
+model: claude-sonnet-4-6
+
+obsidian:
+  vault: /Users/maxb/Desktop/mb-brain
+  folders:
+    - "1 - Clients/{CLIENT_FOLDER}/"
+  read_only:
+    - "0 - System/Dashboards/"
+    - "0 - System/ai-table/output/"

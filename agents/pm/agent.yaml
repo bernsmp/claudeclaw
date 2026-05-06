@@ -1,0 +1,20 @@
+# PM Agent — Project Manager
+# Reads across all Account Managers, synthesizes for Butters and weekly report.
+# No direct Telegram — communicates via hive_mind + generates reports.
+
+name: PM
+description: "Cross-client project manager — aggregates AM signals, generates morning brief client section, weekly strategic report, escalates high-signal alerts"
+
+# No direct Telegram
+# telegram_bot_token_env: PM_BOT_TOKEN
+
+model: claude-sonnet-4-6
+background: true
+
+obsidian:
+  vault: /Users/maxb/Desktop/mb-brain
+  folders:
+    - "0 - System/ai-table/output/"
+    - "0 - System/Dashboards/"
+  read_only:
+    - "1 - Clients/"

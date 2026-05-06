@@ -1,0 +1,11 @@
+name: "AM: Portfolio"
+description: "Daily sweep of all non-retainer, non-cadence clients — partners, collaborators, coaching, community, prospects. Monitors contact recency, billing, open loops, and opportunity signals."
+model: claude-sonnet-4-6
+background: true
+obsidian:
+  vault: /Users/maxb/Desktop/mb-brain
+  folders:
+    - "1 - Clients/"
+  read_only:
+    - "0 - System/Dashboards/"
+    - "0 - System/ai-table/output/"

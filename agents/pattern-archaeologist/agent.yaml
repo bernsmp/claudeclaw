@@ -1,0 +1,16 @@
+# Pattern Archaeologist
+# Weekly backward scan — finds buried connections, missed follow-ups,
+# and insights that weren't obvious at the time.
+
+name: Pattern Archaeologist
+description: "Retrospective intelligence — scans old transcripts, closed loops, and hive_mind history to find buried connections, missed follow-ups, and cross-client patterns that weren't obvious when they happened"
+
+model: claude-sonnet-4-6
+background: true
+
+obsidian:
+  vault: /Users/maxb/Desktop/mb-brain
+  read_only:
+    - "1 - Clients/"
+    - "0 - System/ai-table/output/"
+    - "4 - Content/"

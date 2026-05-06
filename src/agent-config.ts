@@ -11,6 +11,7 @@ export interface AgentConfig {
   botTokenEnv: string;
   botToken: string;
   model?: string;
+  background?: boolean;
   obsidian?: {
     vault: string;
     folders: string[];
@@ -32,15 +33,23 @@ export function loadAgentConfig(agentId: string): AgentConfig {
   const description = (raw['description'] as string) ?? '';
   const botTokenEnv = raw['telegram_bot_token_env'] as string;
   const model = raw['model'] as string | undefined;
+  const background = raw['background'] as boolean | undefined;
 
-  if (!name || !botTokenEnv) {
-    throw new Error(`Agent config ${configPath} must have 'name' and 'telegram_bot_token_env'`);
+  if (!name) {
+    throw new Error(`Agent config ${configPath} must have 'name'`);
   }
 
-  const env = readEnvFile([botTokenEnv]);
-  const botToken = process.env[botTokenEnv] || env[botTokenEnv] || '';
-  if (!botToken) {
-    throw new Error(`Bot token not found: set ${botTokenEnv} in .env`);
+  // Background agents (AMs, PM, specialists) don't need their own Telegram bot.
+  // They communicate via hive_mind table only, delegated from the main process.
+  let botToken = '';
+  if (botTokenEnv) {
+    const env = readEnvFile([botTokenEnv]);
+    botToken = process.env[botTokenEnv] || env[botTokenEnv] || '';
+    if (!botToken && !background) {
+      throw new Error(`Bot token not found: set ${botTokenEnv} in .env`);
+    }
+  } else if (!background) {
+    throw new Error(`Agent config ${configPath} must have 'telegram_bot_token_env' (or set background: true)`);
   }
 
   let obsidian: AgentConfig['obsidian'];
@@ -53,7 +62,7 @@ export function loadAgentConfig(agentId: string): AgentConfig {
     };
   }
 
-  return { name, description, botTokenEnv, botToken, model, obsidian };
+  return { name, description, botTokenEnv: botTokenEnv ?? '', botToken, model, background, obsidian };
 }
 
 /** List all configured agent IDs (directories under agents/ with agent.yaml). */

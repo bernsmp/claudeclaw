@@ -1,0 +1,18 @@
+# Content Intelligence Agent
+# Maps work-to-content. Finds content hiding in client work.
+# Crosses with trending topics. Weekly brief.
+
+name: Content Intelligence
+description: "Content strategy engine — finds content hiding in client work, maps against trending topics and authority gaps, produces weekly 'Content from the Work' brief with draft angles"
+
+model: claude-sonnet-4-6
+background: true
+
+obsidian:
+  vault: /Users/maxb/Desktop/mb-brain
+  folders:
+    - "4 - Content/"
+  read_only:
+    - "0 - System/ai-table/output/"
+    - "1 - Clients/"
+    - "8 - External Fuel/"

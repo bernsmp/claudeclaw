@@ -433,8 +433,8 @@ Every skill in `~/.claude/skills/` loads on every session. Call them directly (`
 | `/stop` | Cancel the current agent query mid-execution — works from Telegram and the dashboard |
 | `/model` | Switch Claude model for this chat. `/model haiku` for speed, `/model sonnet` for balance, `/model opus` (default) for full power. Resets on restart |
 | `/voice` | Toggle voice replies on/off for all messages. When off, voice notes still get transcribed and executed — replies just come back as text |
-| `/newchat` | Wipe the Claude Code session and start fresh. Use when context gets stale or the conversation window is filling up |
-| `/respin` | Pull the last 20 conversation turns back into a fresh session. Run this right after `/newchat` to keep recent context without the full token weight |
+| `/newchat` | Wipe the Claude Code session and start a fresh Claude thread. Durable memory can still be recalled later, so this is not a blank-memory reset |
+| `/respin` | Pull the last 20 conversation turns back into the new session. Run this right after `/newchat` when you want explicit recent-history replay instead of passive memory recall |
 | `/memory` | Show what the bot remembers about you (recent memories from SQLite) |
 | `/forget` | Clear the session ID only. Memories stay and decay naturally over time |
 
@@ -461,10 +461,12 @@ Any other `/command` (like `/todo`, `/gmail`, `/calendar`) passes through to Cla
 
 Context windows fill up over long conversations. When things start feeling off or Claude starts missing context:
 
-1. Send `/newchat` to start a completely fresh session
+1. Send `/newchat` to start a fresh Claude session
 2. Send `/respin` immediately after
 
-`/respin` pulls the last 20 conversation turns from the database and feeds them back into the new session as context. Claude sees what you discussed recently without carrying the full token weight of the old session. It's like a soft restart.
+`/newchat` clears the active Claude session only. Durable memory and recalled context still exist unless re-verified.
+
+`/respin` pulls the last 20 conversation turns from the database and feeds them back into the new session as explicit context. Claude sees what you discussed recently without carrying the full token weight of the old session. It's like a soft restart, but the replay is clearly marked as historical context.
 
 The pulled-in turns are marked as historical context (not new messages), so Claude treats them as background rather than active conversation.
 
@@ -1066,6 +1068,13 @@ Browse more: [github.com/anthropics/claude-code](https://github.com/anthropics/c
 | `DASHBOARD_PORT` | No | Dashboard port (default: `3141`) |
 | `DASHBOARD_URL` | No | Public URL if using Cloudflare Tunnel |
 | `CLAUDE_CODE_OAUTH_TOKEN` | No | Override which Claude account is used |
+| `AGENT_BACKEND` | No | `claude` default, `shadow` for Hermes shadow logs, `hermes` for manual/dashboard Hermes with Claude fallback |
+| `HERMES_BIN` | No | Hermes executable path (default: `hermes`) |
+| `HERMES_PROVIDER` | No | Optional Hermes provider override, e.g. `openai-codex` |
+| `HERMES_MODEL` | No | Optional Hermes model override |
+| `HERMES_TIMEOUT_MS` | No | Hermes turn timeout (default: `600000`) |
+| `HERMES_RESUME_ENABLED` | No | Resume Hermes sessions only after proof spike confirms IDs (default: `false`) |
+| `HERMES_SCHEDULER_TASK_IDS` | No | Comma-separated scheduler task IDs allowed to run on Hermes |
 
 ---
 

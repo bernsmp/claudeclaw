@@ -1,0 +1,16 @@
+# Account Manager Agent — Zed / Trackable Med
+# Retainer client, $6K/mo, as-needed cadence (no set meetings).
+
+name: "AM: Zed (Trackable Med)"
+description: "Account manager for Zed Williamson / Trackable Med — monitors health, tracks 11-person team adoption across Employee Claude Projects, flags risks and opportunities. R&D proving ground for reusable assets."
+
+model: claude-sonnet-4-6
+background: true
+
+obsidian:
+  vault: /Users/maxb/Desktop/mb-brain
+  folders:
+    - "1 - Clients/Trackable Med/"
+  read_only:
+    - "0 - System/Dashboards/"
+    - "0 - System/ai-table/output/"

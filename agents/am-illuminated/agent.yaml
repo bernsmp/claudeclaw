@@ -1,0 +1,16 @@
+# Account Manager Agent — Illuminated (DJ & Katelyn Soults)
+# First real AM pilot. Retainer client, $6K/mo, weekly cadence.
+
+name: "AM: Illuminated"
+description: "Account manager for DJ & Katelyn / Illuminated — monitors health, tracks 8-person team adoption, assembles pre-call context, flags risks and opportunities. CF extraction + tool building retainer."
+
+model: claude-sonnet-4-6
+background: true
+
+obsidian:
+  vault: /Users/maxb/Desktop/mb-brain
+  folders:
+    - "1 - Clients/Illuminated/"
+  read_only:
+    - "0 - System/Dashboards/"
+    - "0 - System/ai-table/output/"

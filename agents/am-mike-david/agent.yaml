@@ -1,0 +1,17 @@
+# Account Manager Agent — Mike David
+# Project-based billing, monthly cadence. Book project is active.
+# Little Tree Marketing and Little Tree Capital are ON HOLD.
+
+name: "AM: Mike David"
+description: "Account manager for Mike David — monitors Book project delivery, billing, and engagement. Little Tree projects on hold. Monthly cadence."
+
+model: claude-sonnet-4-6
+background: true
+
+obsidian:
+  vault: /Users/maxb/Desktop/mb-brain
+  folders:
+    - "1 - Clients/Mike David/"
+  read_only:
+    - "0 - System/Dashboards/"
+    - "0 - System/ai-table/output/"

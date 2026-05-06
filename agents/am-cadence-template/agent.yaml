@@ -1,0 +1,18 @@
+# Account Manager Agent — CADENCE CLIENT TEMPLATE
+# Clone this folder, rename to am-{client-slug}/, customize CLAUDE.md.
+# Extends the standard AM template with Cadence-specific tracking.
+
+name: "AM: {CLIENT_NAME} (Cadence)"
+description: "Cadence account manager for {CLIENT_NAME} — standard AM monitoring plus DRIVE scoring, session scheduling, CF pipeline tracking"
+
+model: claude-sonnet-4-6
+background: true
+
+obsidian:
+  vault: /Users/maxb/Desktop/mb-brain
+  folders:
+    - "1 - Clients/{CLIENT_FOLDER}/"
+  read_only:
+    - "0 - System/Dashboards/"
+    - "0 - System/ai-table/output/"
+    - "5 - Cognitive Fingerprint/"

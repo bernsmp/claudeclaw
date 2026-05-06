@@ -1,0 +1,17 @@
+# Account Manager Agent — Mark Wallace
+# CF client trending toward retainer. Conversion opportunity.
+
+name: "AM: Mark Wallace"
+description: "Cadence account manager for Mark Wallace — standard AM monitoring plus conversion opportunity tracking, engagement signal detection, and scope exploration for potential retainer"
+
+model: claude-sonnet-4-6
+background: true
+
+obsidian:
+  vault: /Users/maxb/Desktop/mb-brain
+  folders:
+    - "1 - Clients/Mark Wallace/"
+  read_only:
+    - "0 - System/Dashboards/"
+    - "0 - System/ai-table/output/"
+    - "5 - Cognitive Fingerprint/"

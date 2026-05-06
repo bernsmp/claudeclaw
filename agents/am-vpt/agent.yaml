@@ -1,0 +1,16 @@
+# Account Manager Agent — Nick & Tim / VPT Financial
+# Retainer client, $6K/mo, weekly cadence.
+
+name: "AM: VPT Financial"
+description: "Account manager for Nick & Tim / VPT Financial — monitors health, tracks 15-person team adoption, assembles pre-call context. Largest team account. Discovery sessions + employee training."
+
+model: claude-sonnet-4-6
+background: true
+
+obsidian:
+  vault: /Users/maxb/Desktop/mb-brain
+  folders:
+    - "1 - Clients/VPT Financial/"
+  read_only:
+    - "0 - System/Dashboards/"
+    - "0 - System/ai-table/output/"

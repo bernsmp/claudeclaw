@@ -398,7 +398,7 @@ Reply: approve all · review one-by-one · skip [numbers]
 ```
 
 **Voice: Max's voice (MANDATORY).**
-- Before drafting ANY @BeyondPrompts content, load Max's Voice DNA from `~/.claude/CLAUDE.md` (the Voice DNA section).
+- Before drafting ANY @BeyondPrompts content, load Max's Voice DNA from `~/.Codex/AGENTS.md` (the Voice DNA section).
 - These posts are Max speaking. First person. His cadence, his word choices, his instincts.
 - Apply the full kill list, banned phrases, and structural checks from the Voice DNA rules.
 - The `voice_learning_log` edits for Beyond Prompts drafts should be analyzed as Max voice calibration when Beyond Prompts work happens. No proactive refill loop.
@@ -923,7 +923,7 @@ Categories: `schedule`, `communication`, `client`, `content`, `preference`, `too
 
 2. **Obsidian** — Append to the relevant section of `~/Desktop/mb-brain/0 - System/max-profile.md`. Add a row to the Corrections Log table with today's date, what was corrected, and the source.
 
-3. **CLAUDE.md** — If the correction is behavioral (changes how Butters should operate, respond, or format things), edit the relevant section of THIS file. Examples: a new kill list entry, a default account change, a new formatting preference.
+3. **AGENTS.md** — If the correction is behavioral (changes how Butters should operate, respond, or format things), edit the relevant section of THIS file. Examples: a new kill list entry, a default account change, a new formatting preference.
 
 **Optional fourth layer:** If the correction is client-related (billing, cadence, status, relationship), also `PATCH $MCC_BASE/api/clients/:id` to update D1.
 
@@ -932,7 +932,7 @@ Categories: `schedule`, `communication`, `client`, `content`, `preference`, `too
 ✅ Updated:
 › SQLite: [category]/[key] = [value]
 › max-profile.md: [section updated]
-› CLAUDE.md: [section updated, if behavioral]
+› AGENTS.md: [section updated, if behavioral]
 ```
 
 Never reply "noted" or "got it" without actually writing to at least SQLite + max-profile.md.
@@ -945,35 +945,10 @@ When a problem is identified, **fix the system that allowed it before fixing the
 
 **Order of operations:**
 1. **Name the root cause** ... why did this happen? What instruction is missing, ambiguous, or lacks a write path?
-2. **Fix the root cause** ... update the protocol, CLAUDE.md rule, or system that failed
+2. **Fix the root cause** ... update the protocol, AGENTS.md rule, or system that failed
 3. **Then fix the symptom** ... update the stale file, resolve the immediate issue
 
 **Test:** If you're about to edit a file to fix a problem, ask: "What instruction should have prevented this?" If there isn't one, write it first.
-
----
-
-## Check Prior Analyses Before Generating New Ones (NON-NEGOTIABLE)
-
-When asked to analyze performance, patterns, or metrics on any **recurring topic** (Max's newsletter, a client's funnel, a product's adoption, an ad campaign, a retainer's health), check for prior analyses BEFORE running fresh queries against raw data.
-
-**Why this exists:** On 2026-05-02 a Claude session regenerated a fresh Substack attribution map for the Cognitive Fingerprint Newsletter and arrived at conclusions that contradicted a March 24 marketing report sitting at `~/Desktop/mb-brain/4 - Content/signal-noise/marketing-report-2026-03-24.md`. Specifically it flagged the Netflix Pricing post as a teardown candidate when prior work explicitly called it a one-time pricing-event outlier. It also reported list-size and rate metrics without filtering the known Oct 2025 migration cohort. Both errors were prevented by reading the prior report first.
-
-**Mechanical pre-flight check (run before any new performance analysis):**
-
-1. **Search the topic-specific folder.** For CFN: `ls ~/Desktop/mb-brain/4\ -\ Content/signal-noise/`. For clients: `ls ~/Desktop/mb-brain/1\ -\ Clients/<client>/`. For products: `~/Desktop/mb-brain/3\ -\ Products/`.
-2. **Search MCC reports:** `ls ~/Desktop/max-command-center/reports/ | grep -i <topic>`.
-3. **Grep across vault:** `grep -rl "<topic-keyword>" ~/Desktop/mb-brain --include="*.md"`.
-4. **Read the most recent file's headline findings, structural-break notes, and excluded cohorts.** Apply those filters before computing fresh metrics.
-5. **State explicitly in the new output:** `Supersedes: <prior file>` AND `Carries forward: <list of structural filters>`. Preserves the chain.
-
-**Red flags that should trigger this check:**
-- "Analyze the performance of..."
-- "Show me the breakdown of..."
-- "Why is X converting / not converting..."
-- "Build an attribution map for..."
-- Any metric computation on a known-recurring topic (newsletter, funnel, retainer, ad campaign).
-
-**Mechanical reinforcement:** When an analysis script is set up for a recurring topic, the script itself should auto-discover prior analyses in known locations and print their key findings at the top of every output. Memory alone is insufficient. Code-level enforcement makes the check unskippable. See `~/Desktop/Jay Article Writer/tools/cfn_attribution_map.py` (`PRIOR_ANALYSES`, `discover_prior_summaries`, `STRUCTURAL_BREAKS`) for the pattern.
 
 ---
 
@@ -1018,7 +993,7 @@ When a task needs the active client list or you need to sanity-check whether som
 - **Obsidian vault**: `~/Desktop/mb-brain/` — primary knowledge base, client notes, dashboards
 - **Goals file**: `~/Desktop/mb-brain/0 - System/goals.md` — read this before any strategic question
 - **AI Table outputs**: `~/Desktop/mb-brain/0 - System/ai-table/output/` — strategic session outputs (see rules below)
-- **Skills**: `~/.claude/skills/` — all 50+ global skills auto-available, invoke when relevant
+- **Skills**: `~/.Codex/skills/` — all 50+ global skills auto-available, invoke when relevant
 - **This project**: `~/Desktop/max-command-center/butters/`
 - **Scheduler + task state**: `~/Desktop/max-command-center/butters/store/claudeclaw.db`
 
@@ -1236,7 +1211,7 @@ When Max says "scan [content] for prompts/skills" or "mine [content] for framewo
 5. Ask Max: "Want me to save any of these as prompts/skills?"
 6. On approval, write prompt files following vault filing rules:
    - Destination: `~/Desktop/mb-brain/0 - System/Prompts/{category}/`
-   - Use the category routing tree from the vault CLAUDE.md (extraction, frameworks, products, content, coding, etc.)
+   - Use the category routing tree from the vault AGENTS.md (extraction, frameworks, products, content, coding, etc.)
    - Required frontmatter: title, tags, category, created, updated
    - Required sections: `## Purpose` (one sentence), `## Prompt` (the prompt in a code block), `## Variables` (list any `{{placeholders}}`)
    - After creating: update `~/Desktop/mb-brain/0 - System/prompt-index.md` with the new entry
@@ -1249,7 +1224,7 @@ The 104 Maven Library items are the highest-value mining target. Systematically 
 
 ### URL Auto-Add
 
-When Max sends a bare URL in Telegram (or "add to library: [url]"), the bot intercepts it and calls `POST /api/learn/add` directly — no Claude roundtrip needed. Confirmation is immediate.
+When Max sends a bare URL in Telegram (or "add to library: [url]"), the bot intercepts it and calls `POST /api/learn/add` directly — no Codex roundtrip needed. Confirmation is immediate.
 
 ---
 
@@ -1325,7 +1300,7 @@ ON CONFLICT(category, key) DO UPDATE SET value=excluded.value, source='check-in'
 ```
 3. Update the relevant section of `~/Desktop/mb-brain/0 - System/max-profile.md`
 4. Add a row to the Corrections Log table in max-profile.md
-5. If behavioral (changes how Butters operates), patch the relevant section of THIS CLAUDE.md file
+5. If behavioral (changes how Butters operates), patch the relevant section of THIS AGENTS.md file
 6. If client-related, `PATCH $MCC_BASE/api/clients/:id` to update D1
 
 **Confirmation:**
@@ -1333,7 +1308,7 @@ ON CONFLICT(category, key) DO UPDATE SET value=excluded.value, source='check-in'
 ✅ Updated [N] things:
 › [category/key]: [old value] → [new value]
 › max-profile.md: [section] updated
-› CLAUDE.md: [section] updated (if applicable)
+› AGENTS.md: [section] updated (if applicable)
 
 Anything else off?
 ```
@@ -1369,7 +1344,7 @@ Results are filtered for known client names. If you tell Max "there's no Gmail m
 - "tasks" → GET /api/tasks?status=active and display
 - "health" → GET /api/systems and report any broken crons
 - "inbox" → run gog gmail search "newer_than:24h" on both accounts and surface client emails
-- "ai table" → run an AI Table session (open ~/Desktop/mb-brain/0 - System/ai-table/ in Claude Code)
+- "ai table" → run an AI Table session (open ~/Desktop/mb-brain/0 - System/ai-table/ in Codex)
 - "radar" → run AI Tool Radar scan now
 - "radar [tool]" → deep dive on specific tool changelog
 - "library [topic]" → search Learn Library for relevant content

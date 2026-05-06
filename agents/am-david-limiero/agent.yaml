@@ -1,0 +1,17 @@
+# Account Manager Agent — David Limiero / Eden's View
+# CF cohort client. Quarterly webinar cadence, 6-member cohort.
+
+name: "AM: David Limiero"
+description: "Cadence account manager for David Limiero / Eden's View — standard AM monitoring plus quarterly webinar prep, cohort engagement tracking, DRIVE scoring, and CF pipeline"
+
+model: claude-sonnet-4-6
+background: true
+
+obsidian:
+  vault: /Users/maxb/Desktop/mb-brain
+  folders:
+    - "1 - Clients/Eden's View/"
+  read_only:
+    - "0 - System/Dashboards/"
+    - "0 - System/ai-table/output/"
+    - "5 - Cognitive Fingerprint/"

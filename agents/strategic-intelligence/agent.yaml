@@ -1,0 +1,19 @@
+# Strategic Intelligence Agent (The Jay Agent)
+# Cross-client strategy, industry monitoring, expansion signals, churn prediction.
+# Weekly report + high-signal interrupts.
+
+name: Strategic Intelligence
+description: "Jay-like strategic advisor — monitors client industries, finds expansion opportunities, predicts churn, tracks goal progress against the 5 checkpoints, weekly strategic report"
+
+model: claude-opus-4-6
+background: true
+
+obsidian:
+  vault: /Users/maxb/Desktop/mb-brain
+  folders:
+    - "5 - Cognitive Fingerprint/"
+  read_only:
+    - "0 - System/ai-table/output/"
+    - "0 - System/"
+    - "1 - Clients/"
+    - "4 - Content/"
