@@ -21,6 +21,13 @@ const envConfig = readEnvFile([
   'GOOGLE_API_KEY',
   'AGENT_TIMEOUT_MS',
   'AGENT_MAX_TURNS',
+  'AGENT_BACKEND',
+  'HERMES_BIN',
+  'HERMES_MODEL',
+  'HERMES_PROVIDER',
+  'HERMES_TIMEOUT_MS',
+  'HERMES_RESUME_ENABLED',
+  'HERMES_SCHEDULER_TASK_IDS',
   'SECURITY_PIN_HASH',
   'IDLE_LOCK_MINUTES',
   'EMERGENCY_KILL_PHRASE',
@@ -130,6 +137,45 @@ export const AGENT_MAX_TURNS = parseInt(
   10,
 );
 
+// ── Agent backend selection ─────────────────────────────────────────
+// claude: existing Claude Code SDK behavior
+// hermes: run Hermes for allowed sources, fallback to Claude on failure
+// shadow: run Claude live and log Hermes output in the background
+export type AgentBackend = 'claude' | 'hermes' | 'shadow';
+
+function normalizeAgentBackend(value: string | undefined): AgentBackend {
+  if (value === 'hermes' || value === 'shadow') return value;
+  return 'claude';
+}
+
+export const AGENT_BACKEND = normalizeAgentBackend(
+  (process.env.AGENT_BACKEND || envConfig.AGENT_BACKEND || '').toLowerCase(),
+);
+
+export const HERMES_BIN =
+  process.env.HERMES_BIN || envConfig.HERMES_BIN || 'hermes';
+
+export const HERMES_MODEL =
+  process.env.HERMES_MODEL || envConfig.HERMES_MODEL || '';
+
+export const HERMES_PROVIDER =
+  process.env.HERMES_PROVIDER || envConfig.HERMES_PROVIDER || '';
+
+export const HERMES_TIMEOUT_MS = parseInt(
+  process.env.HERMES_TIMEOUT_MS || envConfig.HERMES_TIMEOUT_MS || String(10 * 60 * 1000),
+  10,
+);
+
+export const HERMES_RESUME_ENABLED =
+  (process.env.HERMES_RESUME_ENABLED || envConfig.HERMES_RESUME_ENABLED || '').toLowerCase() === 'true';
+
+export const HERMES_SCHEDULER_TASK_IDS = new Set(
+  (process.env.HERMES_SCHEDULER_TASK_IDS || envConfig.HERMES_SCHEDULER_TASK_IDS || '')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean),
+);
+
 // Context window limit for the model. Opus 4.6 (1M context) = 1,000,000.
 // Override via CONTEXT_LIMIT in .env if using a different model variant.
 export const CONTEXT_LIMIT = parseInt(
@@ -178,4 +224,3 @@ export const IDLE_LOCK_MINUTES = parseInt(
 // Emergency kill phrase. Sending this to any bot immediately stops all agents and exits.
 export const EMERGENCY_KILL_PHRASE =
   process.env.EMERGENCY_KILL_PHRASE || envConfig.EMERGENCY_KILL_PHRASE || '';
-
