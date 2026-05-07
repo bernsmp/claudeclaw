@@ -92,7 +92,7 @@ The wizard walks you through everything interactively:
 - Asks which features you want (voice input, voice output, video analysis, WhatsApp)
 - Sets up your Telegram bot token and chat ID
 - **Configures security**: PIN lock, emergency kill phrase, idle auto-lock
-- Opens your editor to personalize `CLAUDE.md`
+- Opens your editor to personalize `CLAUDECLAW_CONFIG/CLAUDE.md`
 - Lists the skills you'll want to install and where to get them
 - Prompts for API keys **only for the features you selected**
 - Installs a background service (launchd on macOS, systemd on Linux, PM2 on Windows)
@@ -1080,9 +1080,11 @@ SELECT * FROM sessions;
 
 ---
 
-## Customizing your assistant (CLAUDE.md)
+## Customizing your assistant (CLAUDECLAW_CONFIG/CLAUDE.md)
 
-`CLAUDE.md` is loaded into every Claude Code session. It's the personality and context file. the main thing to edit to make ClaudeClaw yours.
+Your personal `CLAUDE.md` lives outside the repo in `CLAUDECLAW_CONFIG` (default: `~/.claudeclaw/CLAUDE.md`). It is loaded into every Claude Code session as the personality and context file.
+
+The repo ships `CLAUDE.md.example` as the template. The setup wizard copies that template into your config directory, then opens the private copy for editing. Keep personal names, private paths, client context, agent configs, and operating rules in `CLAUDECLAW_CONFIG`, not in the cloned repo.
 
 The sections that matter most:
 
@@ -1276,9 +1278,9 @@ Or view it in the dashboard via the API: `GET /api/audit?limit=50`.
 - **macOS:** Check if your Mac is showing "Node wants to access..." permission dialogs. The bot hangs until you click Allow. This is easy to miss if your Mac screen is off or in the background.
 
 **Setup fails at bracket placeholders**
-- `CLAUDE.md` ships with `[BRACKETED]` placeholder values like `[YOUR NAME]` and `[YOUR ASSISTANT NAME]`
+- Your private `CLAUDECLAW_CONFIG/CLAUDE.md` is created from `CLAUDE.md.example`, which ships with `[BRACKETED]` placeholder values like `[YOUR NAME]` and `[YOUR ASSISTANT NAME]`
 - These **must** be replaced before the bot can work properly
-- The setup wizard opens `CLAUDE.md` in your editor for this, but if you skip it or your editor doesn't save, edit it manually: open `CLAUDE.md` in any text editor, find/replace all `[BRACKETED]` values with your actual info
+- The setup wizard opens your private `CLAUDECLAW_CONFIG/CLAUDE.md` in your editor for this, but if you skip it or your editor doesn't save, edit it manually: open `~/.claudeclaw/CLAUDE.md` (or your configured path) in any text editor, find/replace all `[BRACKETED]` values with your actual info
 - You do **not** need to fill in every bracket. At minimum: `[YOUR ASSISTANT NAME]`, `[YOUR NAME]`, and `[PATH TO CLAUDECLAW]` (the full path to your claudeclaw directory)
 
 **Git errors during setup**
@@ -1317,7 +1319,7 @@ Or view it in the dashboard via the API: `GET /api/audit?limit=50`.
 ## Common confusions
 
 **"Do I need the mega prompt / Rebuild_Prompt.md?"**
-No. There is no separate prompt to execute and no `Rebuild_Prompt.md` file. `CLAUDE.md` in the repo **is** the prompt, it loads automatically into every Claude Code session. You personalize it once (replace the `[BRACKETED]` placeholders with your info) and forget about it. Just clone the repo, run setup, and go. When you `git pull` updates, your personalized `.env` stays untouched (gitignored) and `CLAUDE.md` changes are merged by git.
+No. There is no separate prompt to execute and no `Rebuild_Prompt.md` file. ClaudeClaw loads your private `CLAUDECLAW_CONFIG/CLAUDE.md` automatically. You personalize it once (replace the `[BRACKETED]` placeholders with your info) and forget about it. Just clone the repo, run setup, and go. When you `git pull` updates, your `.env` and private config stay untouched.
 
 **"Does this use Claude Remote?"**
 No. ClaudeClaw has nothing to do with Anthropic's Remote product. It runs the `claude` CLI locally on your own machine (Mac, Linux, or Windows via WSL2) and pipes results to Telegram. No cloud VMs, no remote sessions.
@@ -1392,11 +1394,11 @@ flowchart TD
 claudeclaw/
 │
 │  ← Files you'll actually touch
-├── CLAUDE.md             ← START HERE: your assistant's personality and context
 ├── banner.txt            ← ASCII art shown on startup. edit or replace freely
 ├── .env                  ← Your API keys (created by setup wizard, gitignored)
 │
 │  ← Configuration and setup
+├── CLAUDE.md.example     Template copied to CLAUDECLAW_CONFIG/CLAUDE.md
 ├── .env.example          Template for .env. shows all available variables
 ├── claudeclaw.plist      macOS LaunchAgent template (setup wizard uses this)
 ├── package.json          npm scripts and dependencies
@@ -1456,8 +1458,8 @@ claudeclaw/
 ```
 
 **The only files you need to edit to get started:**
-1. `CLAUDE.md`. fill in your name, what you do, your file paths, your skills
-2. `.env`. add your API keys (the setup wizard does this for you)
+1. `~/.claudeclaw/CLAUDE.md` (or your `CLAUDECLAW_CONFIG` path). Fill in your name, what you do, file paths, and skills.
+2. `.env`. Add your API keys (the setup wizard does this for you).
 
 Everything else runs without modification.
 
@@ -1808,23 +1810,27 @@ The CLI validates the bot token against the Telegram API before creating anythin
 
 #### Option C: Manual setup (advanced)
 
-If you prefer full control, create the files yourself:
+If you prefer full control, create the files yourself under `CLAUDECLAW_CONFIG` so personal agent prompts do not live in the repo:
 
 ```bash
-# 1. Copy the template
-cp -r agents/_template agents/myagent
+# 1. Pick your config directory
+CONFIG_DIR="${CLAUDECLAW_CONFIG:-$HOME/.claudeclaw}"
+mkdir -p "$CONFIG_DIR/agents"
 
-# 2. Edit the personality
-vim agents/myagent/CLAUDE.md
+# 2. Copy the template
+cp -r agents/_template "$CONFIG_DIR/agents/myagent"
 
-# 3. Create agent.yaml from the example
-cp agents/myagent/agent.yaml.example agents/myagent/agent.yaml
-vim agents/myagent/agent.yaml
+# 3. Edit the personality
+vim "$CONFIG_DIR/agents/myagent/CLAUDE.md"
 
-# 4. Create a bot via @BotFather, add token to .env
+# 4. Create agent.yaml from the example
+cp "$CONFIG_DIR/agents/myagent/agent.yaml.example" "$CONFIG_DIR/agents/myagent/agent.yaml"
+vim "$CONFIG_DIR/agents/myagent/agent.yaml"
+
+# 5. Create a bot via @BotFather, add token to .env
 echo "MYAGENT_BOT_TOKEN=your_token_here" >> .env
 
-# 5. Build and start
+# 6. Build and start
 npm run build
 npm start -- --agent myagent
 ```
