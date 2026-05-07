@@ -398,9 +398,9 @@ async function main() {
   }
 
   // ── 6b. CLAUDE.md personalization ────────────────────────────────────────
-  section('Personalize your assistant (CLAUDE.md)');
+  section('Personalize your assistant (private CLAUDE.md)');
 
-  info('CLAUDE.md is the personality and context file loaded into every session.');
+  info(`${claudeMdDest} is the personality and context file loaded into every session.`);
   info('It defines who your assistant is, what you do, and how it communicates.');
   console.log();
   info('At minimum, replace the [BRACKETED] placeholders:');
@@ -412,7 +412,7 @@ async function main() {
   info('in every message. Think of it as a system prompt that persists everywhere.');
   console.log();
 
-  const openClaude = await confirm('Open CLAUDE.md now to edit it?', true);
+  const openClaude = await confirm('Open your private CLAUDE.md now to edit it?', true);
   if (openClaude) {
     const editor = process.env.EDITOR || (PLATFORM === 'win32' ? 'notepad' : 'nano');
     try {
@@ -830,7 +830,7 @@ async function main() {
     info('Logs: journalctl --user -u claudeclaw -f');
   }
   console.log();
-  info('Edit CLAUDE.md any time to change personality, add context, or update skills.');
+  info(`Edit ${claudeMdDest} any time to change personality, add context, or update skills.`);
   info('Re-run npm run setup to change API keys or service settings.');
   console.log();
 }
