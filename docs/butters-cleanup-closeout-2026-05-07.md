@@ -4,10 +4,11 @@
 
 - Fork remote: `https://github.com/bernsmp/claudeclaw.git`
 - Upstream remote: `https://github.com/earlyaidopters/claudeclaw`
-- Fork `main` contains the merged cleanup slices listed below.
-- MCC root should track the latest Butters `main` SHA after this closeout doc is committed.
+- Fork `main` is at `f8fcb5c` / `f8fcb5ceffc7da187235277fb2d1d84b11603426`.
+- MCC root `main` is at `5b759f7` and points `butters` at `f8fcb5c`.
 - Local preservation branch: `codex/butters-preservation-2026-05-06` at `e9cf4fc`
-- Preservation PR: https://github.com/bernsmp/claudeclaw/pull/1 remains open as a record, not for wholesale merge.
+- Preservation PR: https://github.com/bernsmp/claudeclaw/pull/1 is closed and unmerged. It is an archive only, not a merge candidate.
+- Upstream `earlyaidopters/claudeclaw` `main` was fetched at `545a6d1` during final sanity review. Treat that as a separate future upstream-review question, not part of this preservation cleanup.
 
 ## Merged cleanup slices
 
@@ -23,20 +24,33 @@
   - Does not delete any local files.
 - PR #5, `Add Node version config`
   - Adds `.nvmrc` with Node 22 for consistent local runtime selection.
+- PR #6, `Gate queued WhatsApp sends on approval`
+  - Requires explicit approval before queued WhatsApp sends dispatch.
+  - Preserves encrypted storage and purge assumptions.
+- PR #7, `Add fresh-session memory guard`
+  - Clarifies that `/newchat` resets active Claude session state only.
+  - Preserves durable Memory v2 recall behavior and labels recalled context as potentially stale.
+- PR #8, `Document external config for personal prompts`
+  - Documents `CLAUDECLAW_CONFIG` and keeps personal prompts/private runtime context outside the public repo.
+  - Confirms the default private config directory is `~/.claudeclaw`.
 
 ## Verification
 
-Run from `/Users/maxb/Desktop/max-command-center/butters` after PR #5 was merged:
+Run from `/Users/maxb/Desktop/max-command-center/butters` after PR #8 was merged:
 
 ```bash
+npm run typecheck
 npm run build
+node -e "import('./dist/config.js').then(m => console.log(m.CLAUDECLAW_CONFIG))"
 DB_ENCRYPTION_KEY=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef npm test
 ```
 
 Result:
 
+- Typecheck passed.
 - Build passed.
-- Test suite passed: 15 files, 230 tests.
+- Config check printed `/Users/maxb/.claudeclaw`.
+- Test suite passed: 15 files, 235 tests.
 
 Note: the test suite reads `.env` directly for Telegram file-send integration tests. On this machine those real Telegram tests ran and passed.
 
@@ -50,13 +64,11 @@ git switch codex/butters-preservation-2026-05-06
 
 Do not merge that branch wholesale. It contains valuable local work mixed with older upstream state and local-only artifacts.
 
-## Remaining surgical review candidates
+## Final preservation decision
 
-Review and port selectively from the preservation branch only if the current `main` does not already supersede them:
+Do not keep searching the preservation branch by default. The useful surgical work has been ported. Remaining preservation-branch content is broad archive material: personal agents, operator docs, runtime references, social/content scripts, older dashboard and memory paths, and binary assets.
 
-- WhatsApp approval gate.
-- Fresh-session memory guard and recall UX.
-- Selected docs/reference material that is still accurate after the upstream dashboard, memory, queueing, and external-config updates.
+Only reopen the preservation branch if a concrete future bug or missing behavior points back to a specific file.
 
 Current fork `main` should continue to win by default for:
 
@@ -80,6 +92,6 @@ Representative local-only ignored paths include:
 - `assets/banner in paper.mp4`
 - `x-profile-draft.md`
 
-## Next recommended session
+## Closeout
 
-Start with a read-only comparison of the WhatsApp approval gate from `codex/butters-preservation-2026-05-06` against current `main`, then decide whether it deserves a small port PR.
+This cleanup is closed. Future work should start from fork `main`, not from the preservation branch.
