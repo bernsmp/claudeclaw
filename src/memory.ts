@@ -36,10 +36,15 @@ export interface MemoryContextResult {
   surfacedMemorySummaries: Map<number, string>;
 }
 
+export interface MemoryContextOptions {
+  afterSessionReset?: boolean;
+}
+
 export async function buildMemoryContext(
   chatId: string,
   userMessage: string,
   agentId = 'main',
+  options: MemoryContextOptions = {},
 ): Promise<MemoryContextResult> {
   const seen = new Set<number>();
   const summaryMap = new Map<number, string>();
@@ -110,11 +115,52 @@ export async function buildMemoryContext(
     }
   }
 
-  if (memLines.length === 0 && insightLines.length === 0 && !agentObsidianConfig) {
+  // Layer 4: Cross-agent activity awareness
+  const teamActivity = getOtherAgentActivity(agentId, 24, 10);
+
+  // Layer 5: Conversation history recall
+  // When the user is asking about past conversations, search the conversation_log
+  // for matching exchanges. This gives the agent access to the full context that
+  // memory extraction may have compressed into a single sentence.
+  const historyLines: string[] = [];
+  const recallKeywords = /\bremember\b|\brecall\b|\byesterday\b|\blast time\b|\bwe talked\b|\bwe discussed\b|\bwhat do you know\b|\bdo you know\b|\bwhat did we\b|\bpreviously\b|\bearlier\b|\blast week\b|\bfew days\b/i;
+  if (recallKeywords.test(userMessage)) {
+    const historyTurns = searchConversationHistory(chatId, userMessage, agentId, 7, 10);
+    if (historyTurns.length > 0) {
+      historyLines.push(...historyTurns
+        .reverse() // chronological
+        .map((t) => {
+          const daysAgo = Math.round((Date.now() / 1000 - t.created_at) / 86400);
+          const timeStr = daysAgo === 0 ? 'today' : daysAgo === 1 ? 'yesterday' : `${daysAgo}d ago`;
+          const role = t.role === 'user' ? 'User' : 'You';
+          return `[${timeStr}] ${role}: ${t.content.slice(0, 300)}`;
+        }));
+    }
+  }
+
+  const obsidianBlock = buildObsidianContext(agentObsidianConfig);
+
+  if (
+    memLines.length === 0 &&
+    insightLines.length === 0 &&
+    teamActivity.length === 0 &&
+    historyLines.length === 0 &&
+    !obsidianBlock
+  ) {
     return { contextText: '', surfacedMemoryIds: [], surfacedMemorySummaries: new Map() };
   }
 
   const parts: string[] = [];
+  if (options.afterSessionReset) {
+    parts.push(
+      '[Session reset guard]\n' +
+      'This chat was just reset with /newchat or /forget.\n' +
+      'Any memory, conversation history, team activity, or Obsidian context below is restored background context, not a continuation of the old live session.\n' +
+      'Treat recalled claims as possibly stale until re-verified.\n' +
+      'If you use recalled context, label it as remembered context instead of presenting it as freshly verified truth.\n' +
+      '[End session reset guard]',
+    );
+  }
 
   if (memLines.length > 0 || insightLines.length > 0) {
     const blocks: string[] = ['[Memory context]'];
@@ -131,8 +177,6 @@ export async function buildMemoryContext(
     parts.push(blocks.join('\n'));
   }
 
-  // Layer 4: Cross-agent activity awareness
-  const teamActivity = getOtherAgentActivity(agentId, 24, 10);
   if (teamActivity.length > 0) {
     const activityLines = teamActivity.map((entry) => {
       // Note: created_at is unix seconds, Date.now() is ms, so divide by 1000
@@ -143,27 +187,10 @@ export async function buildMemoryContext(
     parts.push(`[Team activity — what other agents have done recently]\n${activityLines.join('\n')}\n[End team activity]`);
   }
 
-  // Layer 5: Conversation history recall
-  // When the user is asking about past conversations, search the conversation_log
-  // for matching exchanges. This gives the agent access to the full context that
-  // memory extraction may have compressed into a single sentence.
-  const recallKeywords = /\bremember\b|\brecall\b|\byesterday\b|\blast time\b|\bwe talked\b|\bwe discussed\b|\bwhat do you know\b|\bdo you know\b|\bwhat did we\b|\bpreviously\b|\bearlier\b|\blast week\b|\bfew days\b/i;
-  if (recallKeywords.test(userMessage)) {
-    const historyTurns = searchConversationHistory(chatId, userMessage, agentId, 7, 10);
-    if (historyTurns.length > 0) {
-      const historyLines = historyTurns
-        .reverse() // chronological
-        .map((t) => {
-          const daysAgo = Math.round((Date.now() / 1000 - t.created_at) / 86400);
-          const timeStr = daysAgo === 0 ? 'today' : daysAgo === 1 ? 'yesterday' : `${daysAgo}d ago`;
-          const role = t.role === 'user' ? 'User' : 'You';
-          return `[${timeStr}] ${role}: ${t.content.slice(0, 300)}`;
-        });
-      parts.push(`[Conversation history recall]\n${historyLines.join('\n')}\n[End conversation history]`);
-    }
+  if (historyLines.length > 0) {
+    parts.push(`[Conversation history recall]\n${historyLines.join('\n')}\n[End conversation history]`);
   }
 
-  const obsidianBlock = buildObsidianContext(agentObsidianConfig);
   if (obsidianBlock) parts.push(obsidianBlock);
 
   return { contextText: parts.join('\n\n'), surfacedMemoryIds: [...seen], surfacedMemorySummaries: summaryMap };

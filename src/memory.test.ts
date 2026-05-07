@@ -15,6 +15,7 @@ vi.mock('./db.js', () => ({
   pruneSlackMessages: vi.fn(() => 0),
   searchConsolidations: vi.fn(),
   getRecentConsolidations: vi.fn(),
+  searchConversationHistory: vi.fn(),
 }));
 
 vi.mock('./memory-ingest.js', () => ({
@@ -45,6 +46,7 @@ import {
   logConversationTurn,
   searchConsolidations,
   getRecentConsolidations,
+  searchConversationHistory,
 } from './db.js';
 
 import { ingestConversationTurn } from './memory-ingest.js';
@@ -56,6 +58,7 @@ const mockDecayMemories = vi.mocked(decayMemories);
 const mockLogConversationTurn = vi.mocked(logConversationTurn);
 const mockSearchConsolidations = vi.mocked(searchConsolidations);
 const mockGetRecentConsolidations = vi.mocked(getRecentConsolidations);
+const mockSearchConversationHistory = vi.mocked(searchConversationHistory);
 const mockIngest = vi.mocked(ingestConversationTurn);
 
 function makeMemory(overrides: Record<string, unknown> = {}) {
@@ -85,6 +88,7 @@ describe('buildMemoryContext', () => {
     vi.clearAllMocks();
     mockSearchConsolidations.mockReturnValue([]);
     mockGetRecentConsolidations.mockReturnValue([]);
+    mockSearchConversationHistory.mockReturnValue([]);
   });
 
   it('returns empty string when no memories found', async () => {
@@ -107,6 +111,18 @@ describe('buildMemoryContext', () => {
     expect(contextText).toContain('food');
     expect(contextText).toContain('[0.8]');
     expect(contextText).toContain('[End memory context]');
+  });
+
+  it('adds a session reset guard when restored context follows /newchat or /forget', async () => {
+    mockSearchMemories.mockReturnValue([
+      makeMemory({ summary: 'Remembered claim', topics: '["project"]', importance: 0.8 }),
+    ]);
+    mockGetRecentHighImportance.mockReturnValue([]);
+
+    const { contextText } = await buildMemoryContext('chat1', 'what happened?', 'main', { afterSessionReset: true });
+    expect(contextText).toContain('[Session reset guard]');
+    expect(contextText).toContain('restored background context');
+    expect(contextText).toContain('Remembered claim');
   });
 
   it('deduplicates between FTS and recent results', async () => {
@@ -133,6 +149,25 @@ describe('buildMemoryContext', () => {
     expect(surfacedMemoryIds).toContain(20);
     expect(surfacedMemorySummaries.get(10)).toBe('A test memory');
   });
+
+  it('includes conversation history recall even when no structured memories exist', async () => {
+    mockSearchMemories.mockReturnValue([]);
+    mockGetRecentHighImportance.mockReturnValue([]);
+    mockSearchConversationHistory.mockReturnValue([
+      {
+        id: 1,
+        chat_id: 'chat1',
+        session_id: null,
+        role: 'user',
+        content: 'We discussed the launch checklist',
+        created_at: Math.floor(Date.now() / 1000),
+      },
+    ]);
+
+    const { contextText } = await buildMemoryContext('chat1', 'do you remember the launch checklist?');
+    expect(contextText).toContain('[Conversation history recall]');
+    expect(contextText).toContain('We discussed the launch checklist');
+  });
 });
 
 describe('saveConversationTurn', () => {
@@ -157,6 +192,7 @@ describe('buildMemoryContext with consolidations', () => {
     vi.clearAllMocks();
     mockSearchMemories.mockReturnValue([]);
     mockGetRecentHighImportance.mockReturnValue([]);
+    mockSearchConversationHistory.mockReturnValue([]);
   });
 
   it('includes consolidation insights when searchConsolidations returns results', async () => {

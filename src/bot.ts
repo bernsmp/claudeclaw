@@ -130,6 +130,7 @@ interface SlackStateList { mode: 'list'; convos: SlackConversation[] }
 interface SlackStateChat { mode: 'chat'; channelId: string; channelName: string }
 type SlackState = SlackStateList | SlackStateChat;
 const slackState = new Map<string, SlackState>();
+const freshSessionChats = new Set<string>();
 
 /**
  * Escape a string for safe inclusion in Telegram HTML messages.
@@ -435,7 +436,13 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
   const sessionId = getSession(chatIdStr, AGENT_ID);
 
   // Build memory context and prepend to message
-  const { contextText: memCtx, surfacedMemoryIds, surfacedMemorySummaries } = await buildMemoryContext(chatIdStr, message, AGENT_ID);
+  const afterSessionReset = freshSessionChats.has(chatIdStr);
+  const { contextText: memCtx, surfacedMemoryIds, surfacedMemorySummaries } = await buildMemoryContext(
+    chatIdStr,
+    message,
+    AGENT_ID,
+    { afterSessionReset },
+  );
   const parts: string[] = [];
   if (agentSystemPrompt && !sessionId) parts.push(`[Agent role — follow these instructions]\n${agentSystemPrompt}\n[End agent role]`);
   if (memCtx) parts.push(memCtx);
@@ -571,6 +578,7 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
       setSession(chatIdStr, result.newSessionId, AGENT_ID);
       logger.info({ newSessionId: result.newSessionId }, 'Session saved');
     }
+    freshSessionChats.delete(chatIdStr);
 
     const rawResponse = result.text?.trim() || 'Done.';
 
@@ -884,7 +892,8 @@ export function createBot(): Bot {
 
     clearSession(chatIdStr, AGENT_ID);
     sessionBaseline.delete(chatIdStr);
-    await ctx.reply('Session cleared. Starting fresh.');
+    freshSessionChats.add(chatIdStr);
+    await ctx.reply('Session cleared. Fresh Claude session started. Durable memory may still be recalled unless you keep going from a blank slate.');
     logger.info({ chatId: ctx.chat!.id }, 'Session cleared by user');
   });
 
@@ -892,6 +901,7 @@ export function createBot(): Bot {
   bot.command('respin', async (ctx) => {
     if (await replyIfLocked(ctx)) return;
     const chatIdStr = ctx.chat!.id.toString();
+    freshSessionChats.delete(chatIdStr);
 
     // Pull the last 20 turns (10 back-and-forth exchanges) from conversation_log
     const turns = getRecentConversation(chatIdStr, 20);
@@ -1010,8 +1020,11 @@ export function createBot(): Bot {
   // /forget — clear session (memory decay handles the rest)
   bot.command('forget', async (ctx) => {
     if (await replyIfLocked(ctx)) return;
-    clearSession(ctx.chat!.id.toString(), AGENT_ID);
-    await ctx.reply('Session cleared. Memories will fade naturally over time.');
+    const chatIdStr = ctx.chat!.id.toString();
+    clearSession(chatIdStr, AGENT_ID);
+    sessionBaseline.delete(chatIdStr);
+    freshSessionChats.add(chatIdStr);
+    await ctx.reply('Session cleared. Durable memory still exists and may be recalled later unless re-verified.');
   });
 
   // /wa — pull recent WhatsApp chats on demand
@@ -1515,7 +1528,13 @@ async function processDashboardMessage(
   try {
     const sessionId = getSession(chatIdStr, AGENT_ID);
 
-    const { contextText: memCtx, surfacedMemoryIds: dashSurfacedIds, surfacedMemorySummaries: dashSummaries } = await buildMemoryContext(chatIdStr, text, AGENT_ID);
+    const afterSessionReset = freshSessionChats.has(chatIdStr);
+    const { contextText: memCtx, surfacedMemoryIds: dashSurfacedIds, surfacedMemorySummaries: dashSummaries } = await buildMemoryContext(
+      chatIdStr,
+      text,
+      AGENT_ID,
+      { afterSessionReset },
+    );
     const dashParts: string[] = [];
     if (agentSystemPrompt && !sessionId) dashParts.push(`[Agent role — follow these instructions]\n${agentSystemPrompt}\n[End agent role]`);
     if (memCtx) dashParts.push(memCtx);
@@ -1574,6 +1593,7 @@ async function processDashboardMessage(
     if (result.newSessionId) {
       setSession(chatIdStr, result.newSessionId, AGENT_ID);
     }
+    freshSessionChats.delete(chatIdStr);
 
     const rawResponse = result.text?.trim() || 'Done.';
 
