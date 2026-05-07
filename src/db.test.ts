@@ -1,9 +1,13 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
   _initTestDatabase,
+  _getTestDatabase,
+  approveWaMessage,
+  enqueueWaMessage,
   setSession,
   getSession,
   clearSession,
+  getPendingWaMessages,
   saveStructuredMemory,
   searchMemories,
   getRecentMemories,
@@ -54,6 +58,55 @@ describe('database', () => {
 
     it('clearSession on missing session does not throw', () => {
       expect(() => clearSession('nonexistent')).not.toThrow();
+    });
+  });
+
+  // ── WhatsApp outbox approval gate ───────────────────────────────
+
+  describe('WhatsApp outbox approval gate', () => {
+    it('keeps queued WhatsApp messages blocked until approved', () => {
+      const id = enqueueWaMessage('chat@c.us', 'send after approval');
+
+      expect(getPendingWaMessages()).toEqual([]);
+
+      expect(approveWaMessage(id, 'test')).toBe(true);
+      const pending = getPendingWaMessages();
+
+      expect(pending).toHaveLength(1);
+      expect(pending[0]).toMatchObject({
+        id,
+        to_chat_id: 'chat@c.us',
+        body: 'send after approval',
+        approval_required: 1,
+        approval_source: 'test',
+      });
+      expect(pending[0].approved_at).toBeGreaterThan(0);
+    });
+
+    it('stores queued WhatsApp message bodies encrypted at rest', () => {
+      const id = enqueueWaMessage('chat@c.us', 'secret message');
+      const row = _getTestDatabase()
+        .prepare(`SELECT body FROM wa_outbox WHERE id = ?`)
+        .get(id) as { body: string };
+
+      expect(row.body).not.toBe('secret message');
+
+      approveWaMessage(id);
+      expect(getPendingWaMessages()[0].body).toBe('secret message');
+    });
+
+    it('allows explicitly non-gated queued WhatsApp messages', () => {
+      const id = enqueueWaMessage('chat@c.us', 'safe automated send', { approvalRequired: false });
+
+      const pending = getPendingWaMessages();
+
+      expect(pending).toHaveLength(1);
+      expect(pending[0]).toMatchObject({
+        id,
+        body: 'safe automated send',
+        approval_required: 0,
+        approved_at: null,
+      });
     });
   });
 

@@ -128,11 +128,14 @@ function createSchema(database: Database.Database): void {
     );
 
     CREATE TABLE IF NOT EXISTS wa_outbox (
-      id          INTEGER PRIMARY KEY AUTOINCREMENT,
-      to_chat_id  TEXT NOT NULL,
-      body        TEXT NOT NULL,
-      created_at  INTEGER NOT NULL,
-      sent_at     INTEGER
+      id                INTEGER PRIMARY KEY AUTOINCREMENT,
+      to_chat_id        TEXT NOT NULL,
+      body              TEXT NOT NULL,
+      created_at        INTEGER NOT NULL,
+      sent_at           INTEGER,
+      approval_required INTEGER NOT NULL DEFAULT 1,
+      approved_at       INTEGER,
+      approval_source   TEXT DEFAULT ''
     );
 
     CREATE INDEX IF NOT EXISTS idx_wa_outbox_unsent ON wa_outbox(sent_at) WHERE sent_at IS NULL;
@@ -341,6 +344,19 @@ function runMigrations(database: Database.Database): void {
     database.exec(`ALTER TABLE conversation_log ADD COLUMN agent_id TEXT NOT NULL DEFAULT 'main'`);
   }
 
+  const waOutboxCols = database.prepare(`PRAGMA table_info(wa_outbox)`).all() as Array<{ name: string }>;
+  if (waOutboxCols.length > 0) {
+    const addWaOutboxColumn = (name: string, sql: string) => {
+      if (!waOutboxCols.some((c) => c.name === name)) {
+        database.exec(`ALTER TABLE wa_outbox ADD COLUMN ${sql}`);
+      }
+    };
+
+    addWaOutboxColumn('approval_required', 'approval_required INTEGER NOT NULL DEFAULT 1');
+    addWaOutboxColumn('approved_at', 'approved_at INTEGER');
+    addWaOutboxColumn('approval_source', `approval_source TEXT DEFAULT ''`);
+  }
+
   // Task state machine: add started_at and last_status columns
   const taskColNames = taskCols.map((c) => c.name);
   if (!taskColNames.includes('started_at')) {
@@ -537,6 +553,11 @@ export function _initTestDatabase(): void {
   db.pragma('journal_mode = WAL');
   createSchema(db);
   runMigrations(db);
+}
+
+/** @internal - for tests only. */
+export function _getTestDatabase(): Database.Database {
+  return db;
 }
 
 export function getSession(chatId: string, agentId = 'main'): string | undefined {
@@ -1060,21 +1081,43 @@ export interface WaOutboxItem {
   to_chat_id: string;
   body: string;
   created_at: number;
+  approval_required: number;
+  approved_at: number | null;
+  approval_source: string;
 }
 
-export function enqueueWaMessage(toChatId: string, body: string): number {
+export function enqueueWaMessage(
+  toChatId: string,
+  body: string,
+  options: { approvalRequired?: boolean } = {},
+): number {
   const now = Math.floor(Date.now() / 1000);
+  const approvalRequired = options.approvalRequired ?? true;
   const result = db.prepare(
-    `INSERT INTO wa_outbox (to_chat_id, body, created_at) VALUES (?, ?, ?)`,
-  ).run(toChatId, encryptField(body), now);
+    `INSERT INTO wa_outbox (to_chat_id, body, created_at, approval_required) VALUES (?, ?, ?, ?)`,
+  ).run(toChatId, encryptField(body), now, approvalRequired ? 1 : 0);
   return result.lastInsertRowid as number;
 }
 
 export function getPendingWaMessages(): WaOutboxItem[] {
   const rows = db.prepare(
-    `SELECT id, to_chat_id, body, created_at FROM wa_outbox WHERE sent_at IS NULL ORDER BY created_at`,
+    `SELECT id, to_chat_id, body, created_at, approval_required, approved_at, approval_source
+     FROM wa_outbox
+     WHERE sent_at IS NULL
+       AND (approval_required = 0 OR approved_at IS NOT NULL)
+     ORDER BY created_at`,
   ).all() as WaOutboxItem[];
   return rows.map((r) => ({ ...r, body: decryptField(r.body) }));
+}
+
+export function approveWaMessage(id: number, source = 'max'): boolean {
+  const now = Math.floor(Date.now() / 1000);
+  const result = db.prepare(
+    `UPDATE wa_outbox
+     SET approved_at = ?, approval_source = ?
+     WHERE id = ? AND sent_at IS NULL`,
+  ).run(now, source, id);
+  return result.changes > 0;
 }
 
 export function markWaMessageSent(id: number): void {

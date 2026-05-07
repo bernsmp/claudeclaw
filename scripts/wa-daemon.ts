@@ -9,6 +9,7 @@
 import fs from 'fs';
 import http from 'http';
 import path from 'path';
+import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 
 import Database from 'better-sqlite3';
@@ -24,6 +25,66 @@ const SESSION   = path.join(STORE_DIR, 'waweb');
 const PID_FILE  = path.join(STORE_DIR, 'wa-daemon.pid');
 const CDP_PORT  = 9222;
 const HTTP_PORT = 4242;
+
+// ── Field-level encryption ──────────────────────────────────────────
+// Mirrors src/db.ts so the standalone daemon does not create plaintext WA rows.
+let encryptionKey: Buffer | null = null;
+
+function readEnvValue(name: string): string {
+  if (process.env[name]) return process.env[name] ?? '';
+  try {
+    const envPath = path.resolve(__dirname, '../.env');
+    const content = fs.readFileSync(envPath, 'utf-8');
+    for (const line of content.split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#')) continue;
+      const eq = trimmed.indexOf('=');
+      if (eq === -1) continue;
+      if (trimmed.slice(0, eq) === name) {
+        return trimmed.slice(eq + 1).replace(/^['"]|['"]$/g, '');
+      }
+    }
+  } catch { /* no .env */ }
+  return '';
+}
+
+function getEncryptionKey(): Buffer {
+  if (encryptionKey) return encryptionKey;
+  const hex = readEnvValue('DB_ENCRYPTION_KEY');
+  if (!hex || hex.length < 32) {
+    throw new Error('DB_ENCRYPTION_KEY is missing or too short for WhatsApp daemon encryption');
+  }
+  encryptionKey = Buffer.from(hex, 'hex');
+  return encryptionKey;
+}
+
+function encryptField(plaintext: string): string {
+  const key = getEncryptionKey();
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+  const encrypted = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()]);
+  const authTag = cipher.getAuthTag();
+  return `${iv.toString('hex')}:${authTag.toString('hex')}:${encrypted.toString('hex')}`;
+}
+
+function decryptField(ciphertext: string): string {
+  try {
+    const parts = ciphertext.split(':');
+    if (parts.length !== 3) return ciphertext;
+    const [ivHex, authTagHex, dataHex] = parts;
+    if (!ivHex || !authTagHex || !dataHex) return ciphertext;
+
+    const key = getEncryptionKey();
+    const iv = Buffer.from(ivHex, 'hex');
+    const authTag = Buffer.from(authTagHex, 'hex');
+    const data = Buffer.from(dataHex, 'hex');
+    const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
+    decipher.setAuthTag(authTag);
+    return Buffer.concat([decipher.update(data), decipher.final()]).toString('utf8');
+  } catch {
+    return ciphertext;
+  }
+}
 
 // ── PID lock ────────────────────────────────────────────────────────
 fs.mkdirSync(STORE_DIR, { recursive: true });
@@ -46,11 +107,14 @@ const db = new Database(DB_PATH);
 db.pragma('journal_mode = WAL');
 db.exec(`
   CREATE TABLE IF NOT EXISTS wa_outbox (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    to_chat_id TEXT NOT NULL,
-    body       TEXT NOT NULL,
-    created_at INTEGER NOT NULL,
-    sent_at    INTEGER
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    to_chat_id        TEXT NOT NULL,
+    body              TEXT NOT NULL,
+    created_at        INTEGER NOT NULL,
+    sent_at           INTEGER,
+    approval_required INTEGER NOT NULL DEFAULT 1,
+    approved_at       INTEGER,
+    approval_source   TEXT DEFAULT ''
   );
   CREATE TABLE IF NOT EXISTS wa_messages (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -64,6 +128,16 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_wa_outbox_unsent  ON wa_outbox(sent_at)               WHERE sent_at IS NULL;
   CREATE INDEX IF NOT EXISTS idx_wa_messages_chat  ON wa_messages(chat_id, timestamp DESC);
 `);
+
+const waOutboxCols = db.prepare(`PRAGMA table_info(wa_outbox)`).all() as Array<{ name: string }>;
+const addWaOutboxColumn = (name: string, sql: string) => {
+  if (!waOutboxCols.some((c) => c.name === name)) {
+    db.exec(`ALTER TABLE wa_outbox ADD COLUMN ${sql}`);
+  }
+};
+addWaOutboxColumn('approval_required', 'approval_required INTEGER NOT NULL DEFAULT 1');
+addWaOutboxColumn('approved_at', 'approved_at INTEGER');
+addWaOutboxColumn('approval_source', `approval_source TEXT DEFAULT ''`);
 
 // ── WhatsApp client ─────────────────────────────────────────────────
 let ready = false;
@@ -115,7 +189,7 @@ client.on('message', async (msg: wwebjs.Message) => {
     const name = contact.pushname || contact.name || msg.from.replace(/@[cg]\.us$/, '');
     db.prepare(
       `INSERT INTO wa_messages (chat_id, contact_name, body, timestamp, is_from_me, created_at) VALUES (?, ?, ?, ?, 0, ?)`,
-    ).run(msg.from, name, msg.body, msg.timestamp, Math.floor(Date.now() / 1000));
+    ).run(msg.from, name, encryptField(msg.body), msg.timestamp, Math.floor(Date.now() / 1000));
   } catch (err) {
     console.error('[wa-daemon] message handler error:', err);
   }
@@ -124,12 +198,16 @@ client.on('message', async (msg: wwebjs.Message) => {
 function startOutboxPoller(): void {
   setInterval(async () => {
     const pending = db.prepare(
-      `SELECT id, to_chat_id, body FROM wa_outbox WHERE sent_at IS NULL ORDER BY created_at`,
+      `SELECT id, to_chat_id, body
+       FROM wa_outbox
+       WHERE sent_at IS NULL
+         AND (approval_required = 0 OR approved_at IS NOT NULL)
+       ORDER BY created_at`,
     ).all() as Array<{ id: number; to_chat_id: string; body: string }>;
 
     for (const item of pending) {
       try {
-        await client.sendMessage(item.to_chat_id, item.body);
+        await client.sendMessage(item.to_chat_id, decryptField(item.body));
         db.prepare(`UPDATE wa_outbox SET sent_at = ? WHERE id = ?`)
           .run(Math.floor(Date.now() / 1000), item.id);
       } catch (err) {
@@ -194,9 +272,36 @@ const server = http.createServer((req, res) => {
       try {
         const { chatId, text } = JSON.parse(body) as { chatId: string; text: string };
         if (!chatId || !text) { res.statusCode = 400; res.end(JSON.stringify({ error: 'chatId and text required' })); return; }
-        db.prepare(`INSERT INTO wa_outbox (to_chat_id, body, created_at) VALUES (?, ?, ?)`)
-          .run(chatId, text, Math.floor(Date.now() / 1000));
-        res.end(JSON.stringify({ queued: true }));
+        const result = db.prepare(
+          `INSERT INTO wa_outbox (to_chat_id, body, created_at, approval_required) VALUES (?, ?, ?, 1)`,
+        ).run(chatId, encryptField(text), Math.floor(Date.now() / 1000));
+        res.end(JSON.stringify({ queued: true, approvalRequired: true, id: result.lastInsertRowid }));
+      } catch (err) {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ error: String(err) }));
+      }
+    });
+    return;
+  }
+
+  if (req.method === 'POST' && req.url === '/approve') {
+    let body = '';
+    req.on('data', (chunk) => body += chunk);
+    req.on('end', () => {
+      try {
+        const { id, source = 'max' } = JSON.parse(body) as { id: number; source?: string };
+        if (!id) { res.statusCode = 400; res.end(JSON.stringify({ error: 'id required' })); return; }
+        const result = db.prepare(
+          `UPDATE wa_outbox
+           SET approved_at = ?, approval_source = ?
+           WHERE id = ? AND sent_at IS NULL`,
+        ).run(Math.floor(Date.now() / 1000), source, id);
+        if (result.changes === 0) {
+          res.statusCode = 404;
+          res.end(JSON.stringify({ approved: false }));
+          return;
+        }
+        res.end(JSON.stringify({ approved: true, id }));
       } catch (err) {
         res.statusCode = 400;
         res.end(JSON.stringify({ error: String(err) }));
